@@ -20,6 +20,9 @@ import {
   PhoneCall,
   Icon,
 } from "@phosphor-icons/react";
+import { auth, db } from "../lib/firebase";
+import { onAuthStateChanged } from "firebase/auth";
+import { doc, getDoc } from "firebase/firestore";
 
 gsap.registerPlugin(ScrollTrigger);
 
@@ -247,10 +250,41 @@ const CrmDemo = memo(function CrmDemo() {
    SECTION 1 — NAV
    ========================================================================= */
 function Nav() {
+  const [user, setUser] = useState<any>(null);
+  const [profile, setProfile] = useState<any>(null);
+
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser) {
+        setUser(currentUser);
+        try {
+          const userDoc = await getDoc(doc(db, "users", currentUser.uid));
+          if (userDoc.exists()) {
+            setProfile(userDoc.data());
+          } else {
+            setProfile({ name: currentUser.displayName || currentUser.email || "User" });
+          }
+        } catch (err) {
+          console.error("Error fetching user profile:", err);
+          setProfile({ name: currentUser.displayName || currentUser.email || "User" });
+        }
+      } else {
+        setUser(null);
+        setProfile(null);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const getInitials = (name: string) => {
+    if (!name) return "U";
+    return name.split(" ").map(n => n[0]).join("").toUpperCase().substring(0, 2);
+  };
+
   return (
     <header className="fixed inset-x-0 top-0 z-[100] border-b border-white/0 bg-white/70 backdrop-blur-md">
       <nav className="mx-auto flex max-w-[1400px] items-center justify-between px-6 py-4 md:px-10">
-        <span className="text-[15px] font-semibold tracking-tight text-zinc-900">Orbiq</span>
+        <span className="text-[15px] font-bold tracking-tight text-zinc-900">cyberlim.AI</span>
         <div className="hidden items-center gap-8 md:flex">
           {["Product", "CRM", "Automation", "Pricing"].map((item) => (
             <a key={item} data-cursor="link" href="#" className="text-sm text-zinc-650 hover:text-zinc-900">
@@ -262,9 +296,33 @@ function Nav() {
             AI Test
           </a>
         </div>
-        <button data-cursor="link" className="rounded-full bg-zinc-900 px-4 py-2 text-sm font-medium text-white">
-          Start free
-        </button>
+        
+        {user && profile ? (
+          <div className="flex items-center gap-3">
+            <a 
+              href="/ai-test"
+              data-cursor="link"
+              className="hidden sm:flex items-center gap-1 bg-[#1a0f2c]/5 hover:bg-[#1a0f2c]/10 text-xs font-extrabold text-[#0b2e5c] px-3.5 py-1.5 rounded-full border border-[#0b2e5c]/10 transition-all uppercase tracking-wider"
+            >
+              Go to Workspace
+            </a>
+            <a 
+              href="/ai-test"
+              title={profile.name}
+              className="w-9 h-9 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-600 text-white flex items-center justify-center font-black text-xs border-2 border-white shadow-md transition-all hover:scale-105"
+            >
+              {getInitials(profile.name)}
+            </a>
+          </div>
+        ) : (
+          <a 
+            href="/ai-test"
+            data-cursor="link" 
+            className="rounded-full bg-zinc-900 px-5 py-2 text-sm font-medium text-white hover:bg-zinc-800 transition-colors"
+          >
+            Start free
+          </a>
+        )}
       </nav>
     </header>
   );

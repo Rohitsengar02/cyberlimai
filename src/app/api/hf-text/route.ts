@@ -9,13 +9,23 @@ const TEXT_MODELS: Record<string, string> = {
 
 export async function POST(req: NextRequest) {
   try {
-    const { prompt, model = "mistral" } = await req.json();
+    const { prompt, model = "mistral", image } = await req.json();
 
     if (!prompt) {
       return NextResponse.json({ error: "Missing prompt" }, { status: 400 });
     }
 
     if (model === "pollinations") {
+      let contentPayload: any = prompt;
+      
+      // If base64 image data is passed, construct vision/multi-modal content array
+      if (image) {
+        contentPayload = [
+          { type: "text", text: prompt },
+          { type: "image_url", image_url: { url: image } }
+        ];
+      }
+
       // Return a ReadableStream to support real-time word-by-word streaming on the client
       const response = await fetch("https://text.pollinations.ai/", {
         method: "POST",
@@ -24,8 +34,9 @@ export async function POST(req: NextRequest) {
         },
         body: JSON.stringify({
           messages: [
-            { role: "user", content: prompt }
+            { role: "user", content: contentPayload }
           ],
+          model: "openai", // Force OpenAI (GPT-4o) vision model
           stream: true // Enable streaming on Pollinations API
         })
       });

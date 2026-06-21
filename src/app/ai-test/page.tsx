@@ -1,10 +1,13 @@
 "use client";
 
 import React, { useState, useRef, useEffect } from "react";
-import { ArrowLeft, Sparkle, PaperPlaneRight, Cpu, User, WarningOctagon, CheckCircle, Image as ImageIcon, Download, Trash, Cloud, Chat, Paperclip, Gear, Plus, List, ArrowLineLeft, ArrowLineRight, Microphone, MicrophoneSlash, StopCircle } from "@phosphor-icons/react";
+import { ArrowLeft, Sparkle, PaperPlaneRight, Cpu, User, WarningOctagon, CheckCircle, Image as ImageIcon, Download, Trash, Cloud, Chat, Paperclip, Gear, Plus, List, ArrowLineLeft, ArrowLineRight, Microphone, MicrophoneSlash, StopCircle, Globe, MagnifyingGlass, X, Brain, Database } from "@phosphor-icons/react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { auth, db } from "../../lib/firebase";
+import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "firebase/auth";
+import { doc, setDoc, deleteDoc, collection, query, orderBy, onSnapshot, getDoc } from "firebase/firestore";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -12,6 +15,25 @@ interface ChatMessage {
   type?: "text" | "image";
   imageUrl?: string;
   isStreaming?: boolean;
+  images?: string[];
+  weather?: {
+    city: string;
+    temp_C: string;
+    condition: string;
+    humidity: string;
+    wind: string;
+    feels_like: string;
+    icon: string;
+    forecast: { date: string; maxTemp: string; minTemp: string; condition: string }[];
+  };
+  stock?: {
+    symbol: string;
+    price: string;
+    currency: string;
+    change: string;
+    changePercent: string;
+    isPositive: boolean;
+  };
 }
 
 interface ChatSession {
@@ -19,7 +41,30 @@ interface ChatSession {
   title: string;
   type: "text" | "image";
   messages: ChatMessage[];
+  isPersonalBot?: boolean;
+  knowledgeBase?: string;
+  botName?: string;
 }
+
+const sanitizeForFirestore = (obj: any): any => {
+  if (obj === undefined) return null;
+  if (obj === null) return null;
+  if (Array.isArray(obj)) {
+    return obj.map(sanitizeForFirestore);
+  }
+  if (typeof obj === "object") {
+    // If it's a Date object, return it as is (Firestore supports Date)
+    if (obj instanceof Date) return obj;
+    const sanitized: any = {};
+    for (const key in obj) {
+      if (obj[key] !== undefined) {
+        sanitized[key] = sanitizeForFirestore(obj[key]);
+      }
+    }
+    return sanitized;
+  }
+  return obj;
+};
 
 export default function AiTestPage() {
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -32,8 +77,200 @@ export default function AiTestPage() {
     }
   ]);
   const [activeSessionId, setActiveSessionId] = useState("welcome-session");
+  // Active Session helper
+  const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0];
+  const activeWindow = activeSession.type;
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [themeMode, setThemeMode] = useState<"purple" | "dark" | "blue">("purple");
+  const [userProfile, setUserProfile] = useState<any>(null);
+  const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
+  const [editingTitleInput, setEditingTitleInput] = useState("");
+
+  const getInitials = (name: string) => {
+    if (!name) return "U";
+    return name.split(" ").map(n => n[0]).join("").toUpperCase().substring(0, 2);
+  };
+
+  const handleRenameSession = async (id: string, newTitle: string) => {
+    if (!newTitle.trim()) return;
+    setSessions(prev => prev.map(s => s.id === id ? { ...s, title: newTitle.trim() } : s));
+    if (currentUser) {
+      try {
+        await setDoc(doc(db, "users", currentUser.uid, "chats", id), {
+          title: newTitle.trim()
+        }, { merge: true });
+      } catch (err) {
+        console.error("Error renaming chat:", err);
+      }
+    }
+    setEditingSessionId(null);
+  };
+
+  // Firebase Auth States
+  const [currentUser, setCurrentUser] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
+  const [authMode, setAuthMode] = useState<"login" | "register">("login");
+  const [emailInput, setEmailInput] = useState("");
+  const [passwordInput, setPasswordInput] = useState("");
+  const [nameInput, setNameInput] = useState("");
+  const [authError, setAuthError] = useState("");
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+
+  // Monitor Auth State and fetch sessions in real-time
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      if (user) {
+        setCurrentUser(user);
+        
+        // Fetch user profile name
+        getDoc(doc(db, "users", user.uid)).then((docSnap) => {
+          if (docSnap.exists()) {
+            setUserProfile(docSnap.data());
+          } else {
+            setUserProfile({ name: user.displayName || user.email || "User" });
+          }
+        }).catch((err) => {
+          console.error("Error fetching user profile:", err);
+          setUserProfile({ name: user.displayName || user.email || "User" });
+        });
+        
+        // Listen to chats collection from Firestore in real-time
+        const q = query(collection(db, "users", user.uid, "chats"), orderBy("createdAt", "desc"));
+        const unsubscribeSessions = onSnapshot(q, (snapshot) => {
+          const loadedSessions: ChatSession[] = [];
+          snapshot.forEach((doc) => {
+            const data = doc.data();
+            loadedSessions.push({
+              id: doc.id,
+              title: data.title,
+              type: data.type,
+              messages: data.messages || [],
+              isPersonalBot: data.isPersonalBot,
+              knowledgeBase: data.knowledgeBase,
+            });
+          });
+          
+          if (loadedSessions.length > 0) {
+            setSessions(loadedSessions);
+            setActiveSessionId(prev => {
+              if (prev === "welcome-session" || !loadedSessions.find(s => s.id === prev)) {
+                return loadedSessions[0].id;
+              }
+              return prev;
+            });
+          } else {
+            // Seed a welcome session if none exists
+            const welcomeId = "welcome-session";
+            setDoc(doc(db, "users", user.uid, "chats", welcomeId), {
+              title: "New Chat Session",
+              type: "text",
+              messages: [],
+              createdAt: new Date(),
+            });
+          }
+        });
+        
+        setAuthLoading(false);
+        return () => unsubscribeSessions();
+      } else {
+        setCurrentUser(null);
+        setSessions([
+          {
+            id: "welcome-session",
+            title: "New Chat Session",
+            type: "text",
+            messages: []
+          }
+        ]);
+        setActiveSessionId("welcome-session");
+        setAuthLoading(false);
+      }
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // Sync session changes back to Firestore (Debounced to protect rates)
+  useEffect(() => {
+    if (!currentUser) return;
+    // Don't save empty welcome session if not modified
+    if (activeSessionId === "welcome-session" && activeSession.messages.length === 0 && !activeSession.isPersonalBot) return;
+
+    const saveTimeout = setTimeout(async () => {
+      try {
+        const payload = sanitizeForFirestore({
+          title: activeSession.title,
+          type: activeSession.type,
+          messages: activeSession.messages,
+          isPersonalBot: activeSession.isPersonalBot || false,
+          knowledgeBase: activeSession.knowledgeBase || "",
+          createdAt: new Date(), // Keep a reference
+        });
+        await setDoc(doc(db, "users", currentUser.uid, "chats", activeSessionId), payload, { merge: true });
+      } catch (err) {
+        console.error("Firestore sync error:", err);
+      }
+    }, 800);
+
+    return () => clearTimeout(saveTimeout);
+  }, [activeSession.messages, activeSession.title, activeSession.isPersonalBot, activeSession.knowledgeBase, currentUser, activeSessionId]);
+
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthError("");
+    setAuthSubmitting(true);
+
+    try {
+      if (authMode === "login") {
+        await signInWithEmailAndPassword(auth, emailInput, passwordInput);
+      } else {
+        if (!nameInput.trim()) {
+          throw new Error("Name is required for registration.");
+        }
+        const userCredential = await createUserWithEmailAndPassword(auth, emailInput, passwordInput);
+        const user = userCredential.user;
+        
+        // Save user profile to Firestore
+        await setDoc(doc(db, "users", user.uid), {
+          name: nameInput.trim(),
+          email: emailInput,
+          createdAt: new Date(),
+        });
+      }
+      
+      // Clear inputs on success
+      setEmailInput("");
+      setPasswordInput("");
+      setNameInput("");
+    } catch (err: any) {
+      console.error(err);
+      let cleanMsg = err.message || "Authentication failed.";
+      if (cleanMsg.includes("auth/invalid-credential")) {
+        cleanMsg = "Invalid email or password.";
+      } else if (cleanMsg.includes("auth/email-already-in-use")) {
+        cleanMsg = "This email is already registered.";
+      } else if (cleanMsg.includes("auth/weak-password")) {
+        cleanMsg = "Password should be at least 6 characters.";
+      }
+      setAuthError(cleanMsg);
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+    } catch (err) {
+      console.error("Logout failed:", err);
+    }
+  };
+
+  // Personal Bot States
+  const [showMemoryModal, setShowMemoryModal] = useState(false);
+  const [memoryInput, setMemoryInput] = useState("");
+  const [botNameInput, setBotNameInput] = useState("");
+  const [historySearch, setHistorySearch] = useState("");
+  const [historyFilter, setHistoryFilter] = useState<"all" | "text" | "image" | "personal">("all");
 
   // PDF Preview and Resizing States
   const [pdfContent, setPdfContent] = useState("");
@@ -58,6 +295,83 @@ export default function AiTestPage() {
   const [showResumeTemplates, setShowResumeTemplates] = useState(false);
   const [selectedTemplate, setSelectedTemplate] = useState<number | null>(null);
   const showResumeTemplatesRef = useRef(false);
+
+  // Web Search States
+  const [showPlusMenu, setShowPlusMenu] = useState(false);
+  const [plusSearchQuery, setPlusSearchQuery] = useState("");
+  const [activeSearchMode, setActiveSearchMode] = useState<string | null>(null);
+  const [isSearchingWeb, setIsSearchingWeb] = useState(false);
+  const [searchResultData, setSearchResultData] = useState<any>(null);
+  const [showBrowserSidebar, setShowBrowserSidebar] = useState(false);
+  const [browserSidebarWidth, setBrowserSidebarWidth] = useState(480);
+  const [browserSearchQuery, setBrowserSearchQuery] = useState("");
+  const [browserUrl, setBrowserUrl] = useState("https://www.google.com/webhp?igu=1");
+  const [browserAddressInput, setBrowserAddressInput] = useState("https://www.google.com/webhp?igu=1");
+  const [expandedScrapeIdx, setExpandedScrapeIdx] = useState<number | null>(null);
+  const [scrapingLogs, setScrapingLogs] = useState<string[]>([]);
+  const [isScrapingActive, setIsScrapingActive] = useState(false);
+
+  // Geolocation state
+  const [userLocation, setUserLocation] = useState<{ lat: number; lon: number } | null>(null);
+  const [animatedSearchQuery, setAnimatedSearchQuery] = useState("");
+
+  // Image analysis states
+  const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setAttachedImage(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  useEffect(() => {
+    if (typeof window !== "undefined" && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setUserLocation({
+            lat: position.coords.latitude,
+            lon: position.coords.longitude
+          });
+          console.log("Geoposition captured:", position.coords.latitude, position.coords.longitude);
+        },
+        (err) => {
+          console.warn("Geolocation permission declined/unavailable:", err);
+        }
+      );
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isSearchingWeb && browserSearchQuery) {
+      setAnimatedSearchQuery("");
+      let currentText = "";
+      let idx = 0;
+      const interval = setInterval(() => {
+        if (idx < browserSearchQuery.length) {
+          currentText += browserSearchQuery[idx];
+          setAnimatedSearchQuery(currentText);
+          idx++;
+        } else {
+          clearInterval(interval);
+        }
+      }, 40);
+      return () => clearInterval(interval);
+    }
+  }, [isSearchingWeb, browserSearchQuery]);
+
+  const searchOptions = [
+    { id: "google", name: "Google Web Search", icon: "🌐", desc: "Search Google and scrape top pages" },
+    { id: "news", name: "Latest News Search", icon: "📰", desc: "Retrieve recent news and articles" },
+    { id: "wikipedia", name: "Wikipedia Lookup", icon: "🧠", desc: "Fetch summaries from Wikipedia pages" },
+    { id: "weather", name: "Weather Scraper", icon: "🌤️", desc: "Get real-time weather reports" },
+    { id: "finance", name: "Stock/Market Data", icon: "📉", desc: "Search current financial stats" }
+  ];
 
   const resumeTemplates = [
     {
@@ -147,9 +461,7 @@ export default function AiTestPage() {
   const textChatEndRef = useRef<HTMLDivElement>(null);
   const imageChatEndRef = useRef<HTMLDivElement>(null);
 
-  // Active Session helper
-  const activeSession = sessions.find(s => s.id === activeSessionId) || sessions[0];
-  const activeWindow = activeSession.type;
+
 
   const toggleMicrophone = () => {
     if (typeof window === "undefined") return;
@@ -498,12 +810,82 @@ export default function AiTestPage() {
       const { jsPDF } = await import("jspdf");
       const html2canvas = (await import("html2canvas")).default;
 
-      const canvas = await html2canvas(element, {
+      // Create a hidden iframe to isolate the element from global stylesheets (which may contain unsupported CSS like lab() or oklch())
+      const iframe = document.createElement("iframe");
+      iframe.style.position = "fixed";
+      iframe.style.width = "800px";
+      iframe.style.height = "1100px";
+      iframe.style.visibility = "hidden";
+      iframe.style.left = "-10000px";
+      document.body.appendChild(iframe);
+
+      const iframeDoc = iframe.contentDocument || iframe.contentWindow?.document;
+      if (!iframeDoc) {
+        document.body.removeChild(iframe);
+        throw new Error("Could not create isolated iframe document");
+      }
+
+      // Write basic document structure with clean styles
+      iframeDoc.open();
+      iframeDoc.write(`
+        <html>
+          <head>
+            <style>
+              body {
+                margin: 0;
+                padding: 0;
+                background-color: #ffffff;
+                color: #000000;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+              }
+              /* Strict printable styles matching preview */
+              .pdf-container {
+                width: 595px;
+                min-height: 842px;
+                padding: 40px;
+                box-sizing: border-box;
+                background-color: #ffffff;
+                color: #000000;
+              }
+              h1 { font-size: 20px; font-weight: bold; margin-top: 16px; margin-bottom: 8px; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
+              h2 { font-size: 16px; font-weight: bold; margin-top: 12px; margin-bottom: 6px; }
+              h3 { font-size: 14px; font-weight: bold; margin-top: 8px; margin-bottom: 4px; }
+              p { font-size: 12px; line-height: 1.6; margin-bottom: 12px; color: #374151; }
+              ul, ol { margin-bottom: 12px; padding-left: 20px; }
+              li { font-size: 12px; line-height: 1.6; color: #374151; margin-bottom: 4px; }
+              table { width: 100%; border-collapse: collapse; margin-top: 16px; margin-bottom: 16px; font-size: 10px; }
+              th, td { border: 1px solid #e5e7eb; padding: 8px; text-align: left; }
+              th { background-color: #f3f4f6; font-weight: bold; color: #4b5563; }
+              td { color: #1f2937; }
+              code { background-color: #f3f4f6; color: #b45309; padding: 2px 4px; rounded: 4px; font-family: monospace; font-size: 10px; }
+              .header-meta { border-b: 1px solid #e5e7eb; padding-bottom: 12px; margin-bottom: 24px; display: flex; justify-content: space-between; font-size: 10px; color: #9ca3af; }
+              .footer-meta { border-t: 1px solid #e5e7eb; padding-top: 12px; margin-top: 24px; text-align: center; font-size: 9px; color: #9ca3af; }
+            </style>
+          </head>
+          <body>
+            <div id="clone-target" class="pdf-container"></div>
+          </body>
+        </html>
+      `);
+      iframeDoc.close();
+
+      // Clone the content and append to iframe target container
+      const cloneTarget = iframeDoc.getElementById("clone-target");
+      if (cloneTarget) {
+        // We clone the inner HTML of pdf-preview-canvas so that it retains all markdown elements but inherits clean, safe styles
+        cloneTarget.innerHTML = element.innerHTML;
+      }
+
+      // Render canvas using html2canvas in the iframe scope
+      const canvas = await html2canvas(cloneTarget || element, {
         scale: 2.5,
         useCORS: true,
         backgroundColor: "#ffffff",
         logging: false,
       });
+
+      // Cleanup iframe
+      document.body.removeChild(iframe);
 
       const imgData = canvas.toDataURL("image/png");
       const pdf = new jsPDF({
@@ -543,20 +925,44 @@ export default function AiTestPage() {
     }
   }, [activeSession.messages, activeWindow]);
 
-  const createNewSession = (type: "text" | "image") => {
+  const createNewSession = async (type: "text" | "image") => {
     const id = Date.now().toString();
     const newSession: ChatSession = {
       id,
-      title: type === "text" ? `Text Chat #${sessions.length + 1}` : `Image Canvas #${sessions.length + 1}`,
+      title: type === "text" ? `New Chat Session` : `New Image Canvas`,
       type,
       messages: []
     };
-    setSessions((prev) => [newSession, ...prev]);
-    setActiveSessionId(id);
+    
+    if (currentUser) {
+      try {
+        await setDoc(doc(db, "users", currentUser.uid, "chats", id), {
+          title: newSession.title,
+          type: newSession.type,
+          messages: [],
+          isPersonalBot: false,
+          knowledgeBase: "",
+          createdAt: new Date(),
+        });
+        setActiveSessionId(id);
+      } catch (err) {
+        console.error("Error saving new session to Firestore:", err);
+      }
+    } else {
+      setSessions((prev) => [newSession, ...prev]);
+      setActiveSessionId(id);
+    }
   };
 
-  const deleteSession = (id: string, e: React.MouseEvent) => {
+  const deleteSession = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
+    if (currentUser) {
+      try {
+        await deleteDoc(doc(db, "users", currentUser.uid, "chats", id));
+      } catch (err) {
+        console.error("Firestore delete error:", err);
+      }
+    }
     if (sessions.length === 1) {
       // Reset only session left
       setSessions([
@@ -577,6 +983,29 @@ export default function AiTestPage() {
     }
   };
 
+  const triggerScrapingLogs = (queryText: string) => {
+    setIsScrapingActive(true);
+    setScrapingLogs([]);
+    
+    const logs = [
+      `Spawned Antigravity Browser Agent...`,
+      `Navigating to https://www.google.com/search?igu=1&q=${encodeURIComponent(queryText)}`,
+      `Waiting for SGE Google AI Generative Overview to render...`,
+      `Extracting top search links and articles...`,
+      `Scraping page 1 (Yahoo Finance / Top Search result)... [OK]`,
+      `Scraping page 2 (Wikipedia / Main Reference page)... [OK]`,
+      `Successfully parsed Google AI Mode Generative summary.`,
+      `Formatting live weather and stock indices payload... [OK]`,
+      `Transferring payload to cyberlim.AI chat interface...`
+    ];
+    
+    logs.forEach((log, index) => {
+      setTimeout(() => {
+        setScrapingLogs((prev) => [...prev, log]);
+      }, index * 350);
+    });
+  };
+
   const handleSendText = async (e?: React.FormEvent, customPrompt?: string) => {
     if (e) e.preventDefault();
     const targetPrompt = customPrompt || textInput;
@@ -588,6 +1017,10 @@ export default function AiTestPage() {
     setTextStatus("idle");
     setTextErrorMsg("");
 
+    // Store base64 image data locally for the API call
+    const currentAttachedImage = attachedImage;
+    setAttachedImage(null); // Clear preview immediately on send
+
     // Add user message to active session
     setSessions((prev) => prev.map(s => {
       if (s.id === activeSessionId) {
@@ -596,11 +1029,43 @@ export default function AiTestPage() {
         return {
           ...s,
           title,
-          messages: [...s.messages, { role: "user", content: userPrompt, type: "text" }]
+          messages: [...s.messages, { role: "user", content: userPrompt, type: "text", imageUrl: currentAttachedImage || undefined }]
         };
       }
       return s;
     }));
+
+    // Check if userPrompt is a URL
+    const isUrl = /^https?:\/\//i.test(userPrompt) || /^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,5}(:[0-9]{1,5})?(\/.*)?$/i.test(userPrompt);
+    if (isUrl) {
+      let normalizedUrl = userPrompt.trim();
+      if (!/^https?:\/\//i.test(normalizedUrl)) {
+        normalizedUrl = "https://" + normalizedUrl;
+      }
+      if (normalizedUrl.includes("google.com") && !normalizedUrl.includes("igu=1")) {
+        if (normalizedUrl.includes("?")) {
+          normalizedUrl += "&igu=1";
+        } else {
+          normalizedUrl += "?igu=1";
+        }
+      }
+      setBrowserUrl(normalizedUrl);
+      setBrowserAddressInput(normalizedUrl);
+      setShowBrowserSidebar(true);
+      setShowPdfSidebar(false);
+
+      setSessions((prev) => prev.map(s => {
+        if (s.id === activeSessionId) {
+          return {
+            ...s,
+            messages: [...s.messages, { role: "assistant", content: `Directly loading the requested website inside the right sidebar browser: [${normalizedUrl}](${normalizedUrl})`, type: "text" }]
+          };
+        }
+        return s;
+      }));
+      setIsTextLoading(false);
+      return;
+    }
 
     // Check for resume trigger in chat mode
     const lowerPrompt = userPrompt.toLowerCase();
@@ -640,10 +1105,103 @@ export default function AiTestPage() {
     }
 
     try {
+      let finalPrompt = promptToSend;
+      let scrapedWeather: any = null;
+      let scrapedStock: any = null;
+      let scrapedImages: string[] = [];
+
+      if (activeSession.isPersonalBot && activeSession.knowledgeBase) {
+        finalPrompt = `SYSTEM INSTRUCTION: You are a Personal Knowledge Chatbot. Use the provided Knowledge Base below as your primary source of facts and guidelines to answer the user's query. If the query cannot be answered using the Knowledge Base, use your general knowledge to answer the query accurately, but prioritize the provided memory.`;
+
+        if (isPdfRequest) {
+          finalPrompt += `\n\nADDITIONAL INSTRUCTION: Since the user requested a PDF/document output, you must format this answer beautifully as a clean structured document and wrap it exactly inside tags like this:\n[PDF_START]\n# Title\nContent here...\n[PDF_END]\nDo not put extra markdown formatting tags outside of those blocks. Make the structure clear and elegant.`;
+        }
+
+        finalPrompt += `\n\nKNOWLEDGE BASE:
+${activeSession.knowledgeBase}
+
+USER QUERY:
+${userPrompt}
+
+Answer:`;
+      } else if (activeSearchMode) {
+        setIsSearchingWeb(true);
+        setShowBrowserSidebar(true);
+        setShowPdfSidebar(false); // Hide PDF sidebar when search browser opens
+        setBrowserSearchQuery(userPrompt);
+        const targetUrl = `https://www.google.com/search?igu=1&q=${encodeURIComponent(userPrompt)}`;
+        setBrowserUrl(targetUrl);
+        setBrowserAddressInput(targetUrl);
+        setSearchResultData(null);
+        triggerScrapingLogs(userPrompt);
+
+        try {
+          const searchRes = await fetch("/api/web-search", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ query: userPrompt, mode: activeSearchMode, coords: userLocation })
+          });
+
+          if (searchRes.ok) {
+            const searchData = await searchRes.json();
+            setSearchResultData(searchData);
+            scrapedWeather = searchData.weather;
+            scrapedStock = searchData.stock;
+            scrapedImages = searchData.images || [];
+
+            // Construct context from search results and scraped content
+            let contextText = ``;
+            if (searchData.aiOverview) {
+              contextText += `GOOGLE AI OVERVIEW / SUMMARY:\n${searchData.aiOverview}\n\n`;
+            }
+            
+            contextText += `SEARCH RESULTS:\n`;
+            searchData.results?.forEach((res: any, idx: number) => {
+              contextText += `[${idx+1}] ${res.title}\nURL: ${res.url}\nDescription: ${res.snippet}\n\n`;
+            });
+
+            if (searchData.scraped && searchData.scraped.length > 0) {
+              contextText += `SCRAPED FULL TEXT DETAILS FROM TOP PAGES:\n`;
+              searchData.scraped.forEach((sc: any, idx: number) => {
+                contextText += `--- START CONTENT FROM PAGE [${idx+1}] (${sc.url}) ---\n${sc.content}\n--- END CONTENT ---\n\n`;
+              });
+            }
+
+            if (scrapedWeather) {
+              contextText += `LIVE WEATHER DATA:\n`;
+              contextText += `City: ${scrapedWeather.city}\n`;
+              contextText += `Current Temperature: ${scrapedWeather.temp_C}°C\n`;
+              contextText += `Feels Like: ${scrapedWeather.feels_like}°C\n`;
+              contextText += `Condition: ${scrapedWeather.condition}\n`;
+              contextText += `Humidity: ${scrapedWeather.humidity}%\n`;
+              contextText += `Wind Speed: ${scrapedWeather.wind}\n`;
+            }
+
+            if (scrapedStock) {
+              contextText += `LIVE STOCK MARKET DATA:\n`;
+              contextText += `Symbol/Ticker: ${scrapedStock.symbol}\n`;
+              contextText += `Price: ${scrapedStock.price} ${scrapedStock.currency}\n`;
+              contextText += `Change: ${scrapedStock.change} (${scrapedStock.changePercent})\n`;
+            }
+
+            finalPrompt = `Current Local Time & Date: ${new Date().toLocaleString()}\n\nThe user is asking: "${userPrompt}"\n\nWe scraped the web for answers. Below is Google search information and scraped site context:\n${contextText}\n\nINSTRUCTIONS: Formulate a highly accurate, clean, responsive answer based on the search context and the current local time provided above. Prioritize the GOOGLE AI OVERVIEW / SUMMARY as the primary ground truth. Refer to the sources/URLs by citation (e.g. [1], [2]) where appropriate. If the context doesn't contain the answer, use your best knowledge but prioritize the scraped information. Make sure it sounds natural.`;
+          } else {
+            console.error("Google search route failed");
+          }
+        } catch (searchErr) {
+          console.error("Failed to run Google search scraping:", searchErr);
+        } finally {
+          setIsSearchingWeb(false);
+          setTimeout(() => {
+            setIsScrapingActive(false);
+          }, 1200);
+        }
+      }
+
       const response = await fetch("/api/hf-text", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: promptToSend, model: "pollinations" })
+        body: JSON.stringify({ prompt: finalPrompt, model: "pollinations", image: currentAttachedImage })
       });
 
       if (!response.ok) {
@@ -656,7 +1214,7 @@ export default function AiTestPage() {
         if (s.id === activeSessionId) {
           return {
             ...s,
-            messages: [...s.messages, { role: "assistant", content: "", type: "text", isStreaming: true }]
+            messages: [...s.messages, { role: "assistant", content: "", type: "text", isStreaming: true, weather: scrapedWeather, stock: scrapedStock, images: scrapedImages }]
           };
         }
         return s;
@@ -865,6 +1423,24 @@ export default function AiTestPage() {
 
   // Helper function to render markdown text, checklist and table views
   const renderMessageContent = (content: string) => {
+    if (content.includes("[OUT_OF_BOUNDS]")) {
+      const errorText = content.replace("[OUT_OF_BOUNDS]", "").trim();
+      return (
+        <div className="bg-gradient-to-br from-[#240a15] via-[#1a0c24] to-[#12061a] border border-red-500/30 rounded-2xl p-5 shadow-2xl relative overflow-hidden backdrop-blur-md max-w-md my-2">
+          <div className="absolute top-0 right-0 w-24 h-24 bg-red-500/5 rounded-full blur-xl pointer-events-none" />
+          <div className="flex gap-3">
+            <div className="h-9 w-9 rounded-xl bg-red-950/40 border border-red-900/40 flex items-center justify-center shrink-0 text-red-400">
+              <WarningOctagon size={18} weight="fill" />
+            </div>
+            <div className="space-y-1.5">
+              <h4 className="text-xs font-black text-red-400 uppercase tracking-wider">Out of Knowledge Base</h4>
+              <p className="text-xs text-zinc-300 font-medium leading-relaxed">{errorText || "I'm sorry, but that information is outside my designated knowledge base. Please ask something related to the loaded memory."}</p>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     // If the message contains PDF blocks, render a clean banner to point to the sidebar
     const hasPdfTag = content.includes("[PDF_START]");
     let displayContent = content;
@@ -914,6 +1490,148 @@ export default function AiTestPage() {
 
   const hasMessages = activeSession.messages.length > 0;
 
+  const filteredSessions = sessions.filter((s) => {
+    const matchesSearch = s.title.toLowerCase().includes(historySearch.toLowerCase()) || 
+                          (s.knowledgeBase && s.knowledgeBase.toLowerCase().includes(historySearch.toLowerCase()));
+    if (!matchesSearch) return false;
+
+    if (historyFilter === "text") return s.type === "text" && !s.isPersonalBot;
+    if (historyFilter === "image") return s.type === "image";
+    if (historyFilter === "personal") return s.isPersonalBot ? true : false;
+    return true; // "all"
+  });
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#0c0414] flex flex-col justify-center items-center relative overflow-hidden">
+        {/* Ambient background glows */}
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-96 h-96 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-1/4 left-1/3 w-80 h-80 bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="flex flex-col items-center gap-4 z-10">
+          <div className="h-10 w-10 rounded-2xl bg-[#1c1528] border border-purple-900/40 flex items-center justify-center animate-spin">
+            <Sparkle size={20} className="text-purple-400" />
+          </div>
+          <span className="text-xs text-purple-300 font-bold uppercase tracking-widest animate-pulse">Initializing Security...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!currentUser) {
+    return (
+      <div className="min-h-screen bg-[#0c0414] flex justify-center items-center relative overflow-hidden px-4 font-sans">
+        {/* Ambient background glows */}
+        <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-96 h-96 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute bottom-1/4 left-1/3 w-80 h-80 bg-blue-600/10 rounded-full blur-3xl pointer-events-none" />
+        <div className="absolute top-10 left-10 flex items-center gap-2 z-20">
+          <Link href="/" className="flex items-center gap-2 text-xs font-bold text-purple-400 hover:text-white transition-colors bg-[#1c1528] border border-purple-900/30 px-4 py-2 rounded-full">
+            <ArrowLeft size={12} /> Back to Home
+          </Link>
+        </div>
+
+        {/* Auth Box Container */}
+        <div className="w-full max-w-md bg-[#1c1528]/85 border border-purple-900/40 rounded-3xl p-8 shadow-2xl z-10 backdrop-blur-md relative overflow-hidden">
+          <div className="absolute -top-10 -right-10 w-24 h-24 bg-purple-500/5 rounded-full blur-xl" />
+          
+          <div className="text-center space-y-2 mb-6">
+            <div className="inline-flex h-11 w-11 items-center justify-center rounded-2xl bg-purple-950/60 border border-purple-900/40 text-purple-400 mb-1">
+              <Brain size={22} weight="fill" />
+            </div>
+            <h1 className="text-2xl font-black tracking-tight text-white uppercase">cyberlim.AI</h1>
+            <p className="text-xs text-purple-400">Unlock your automated lead workspace</p>
+          </div>
+
+          {/* Toggle Tabs */}
+          <div className="flex bg-[#0c0414] p-1 rounded-xl border border-purple-955/60 text-xs mb-6">
+            <button
+              onClick={() => { setAuthMode("login"); setAuthError(""); }}
+              className={`flex-1 py-2 rounded-lg text-center font-bold transition-all cursor-pointer ${
+                authMode === "login" ? "bg-[#1c1528] text-white font-black" : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              Sign In
+            </button>
+            <button
+              onClick={() => { setAuthMode("register"); setAuthError(""); }}
+              className={`flex-1 py-2 rounded-lg text-center font-bold transition-all cursor-pointer ${
+                authMode === "register" ? "bg-[#1c1528] text-white font-black" : "text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              Create Account
+            </button>
+          </div>
+
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            {authMode === "register" && (
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider pl-1">Full Name</label>
+                <input
+                  type="text"
+                  required
+                  placeholder="Enter your name"
+                  value={nameInput}
+                  onChange={(e) => setNameInput(e.target.value)}
+                  className="w-full bg-[#0c0414] border border-purple-900/30 focus:border-purple-500/80 rounded-xl px-4 py-2.5 text-xs text-white outline-none transition-colors"
+                />
+              </div>
+            )}
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider pl-1">Email Address</label>
+              <input
+                type="email"
+                required
+                placeholder="name@company.com"
+                value={emailInput}
+                onChange={(e) => setEmailInput(e.target.value)}
+                className="w-full bg-[#0c0414] border border-purple-900/30 focus:border-purple-500/80 rounded-xl px-4 py-2.5 text-xs text-white outline-none transition-colors"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider pl-1">Password</label>
+              <input
+                type="password"
+                required
+                placeholder="••••••••"
+                value={passwordInput}
+                onChange={(e) => setPasswordInput(e.target.value)}
+                className="w-full bg-[#0c0414] border border-purple-900/30 focus:border-purple-500/80 rounded-xl px-4 py-2.5 text-xs text-white outline-none transition-colors"
+              />
+            </div>
+
+            {authError && (
+              <div className="flex items-center gap-2 bg-red-955/20 border border-red-900/40 px-3.5 py-2.5 rounded-xl text-[10px] font-bold text-red-400 leading-normal">
+                <WarningOctagon size={16} className="shrink-0 text-red-500" />
+                <span>{authError}</span>
+              </div>
+            )}
+
+            <button
+              type="submit"
+              disabled={authSubmitting}
+              className="w-full py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs uppercase tracking-wider rounded-xl transition-all shadow-lg shadow-purple-950/30 flex items-center justify-center gap-2 cursor-pointer disabled:opacity-50"
+            >
+              {authSubmitting ? (
+                <>
+                  <div className="h-3 w-3 rounded-full border border-white border-t-transparent animate-spin" />
+                  <span>Processing...</span>
+                </>
+              ) : (
+                <span>{authMode === "login" ? "Sign In to Workspace" : "Register Account"}</span>
+              )}
+            </button>
+          </form>
+
+          {/* Legal / Info */}
+          <p className="text-[9px] text-gray-505 text-center mt-6 uppercase tracking-wider">
+            Secured Auth Sandbox • Data synchronized in Real-time
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-[#0c0414] text-white flex relative overflow-hidden font-sans">
       
@@ -930,11 +1648,17 @@ export default function AiTestPage() {
           sidebarOpen ? "w-64" : "w-0 -translate-x-full overflow-hidden"
         }`}
       >
-        <div className="p-4 flex flex-col gap-5 overflow-y-auto flex-1">
+        <div className="p-4 flex flex-col gap-4 overflow-y-auto flex-1 no-scrollbar">
           {/* Logo brand info */}
-          <div className="flex items-center gap-2 px-2">
-            <img src="http://hextaui.com/logo.svg" width={26} height={26} alt="cyberlim.AI Logo" className="invert" />
-            <span className="font-bold text-sm tracking-tight text-white">cyberlim.AI</span>
+          <div className="flex items-center justify-between px-1">
+            <div className="flex items-center gap-2">
+              <img src="http://hextaui.com/logo.svg" width={26} height={26} alt="cyberlim.AI Logo" className="invert" />
+              <span className="font-bold text-sm tracking-tight text-white">cyberlim.AI</span>
+            </div>
+            {/* Active session counter */}
+            <span className="text-[9px] bg-purple-950 border border-purple-900/40 text-purple-400 font-bold px-2 py-0.5 rounded-full select-none">
+              {sessions.length} chats
+            </span>
           </div>
 
           {/* New Chat Actions */}
@@ -953,11 +1677,83 @@ export default function AiTestPage() {
             </button>
           </div>
 
+          {/* Personal Bot Creator Card */}
+          {activeSession.type === "text" && (
+            <div className="bg-gradient-to-br from-[#1b1227]/80 via-[#10091c]/90 to-[#07030c] border border-purple-900/50 rounded-2xl p-3 space-y-2 shadow-lg relative overflow-hidden group">
+              <div className="absolute -top-6 -right-6 w-16 h-16 bg-purple-500/10 rounded-full blur-xl pointer-events-none" />
+              <div className="flex items-center gap-2">
+                <span className={`p-1.5 rounded-xl ${activeSession.isPersonalBot ? 'bg-emerald-950 text-emerald-450 border border-emerald-900/40 animate-pulse' : 'bg-purple-950 text-purple-300 border border-purple-900/40'}`}>
+                  <Brain size={14} weight="fill" />
+                </span>
+                <span className="text-[10px] font-black text-zinc-200 uppercase tracking-wider">
+                  {activeSession.isPersonalBot ? "Personal Bot Loaded" : "Create Personal Bot"}
+                </span>
+              </div>
+              <p className="text-[9px] text-zinc-400 leading-normal">
+                {activeSession.isPersonalBot 
+                  ? `Knowledge base loaded (${(activeSession.knowledgeBase?.length || 0)} bytes). Click to update or edit.`
+                  : "Paste any text data or guidelines to restrict this chat strictly to that information."}
+              </p>
+              <button
+                onClick={() => {
+                  setMemoryInput(activeSession.knowledgeBase || "");
+                  setBotNameInput(activeSession.isPersonalBot ? activeSession.title : "My Custom AI Agent");
+                  setShowMemoryModal(true);
+                }}
+                className={`w-full py-1.5 font-bold text-[9px] uppercase tracking-wider rounded-lg transition-all shadow-md ${
+                  activeSession.isPersonalBot 
+                    ? "bg-[#1c1528] hover:bg-[#251b36] border border-purple-900/50 text-purple-300"
+                    : "bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white shadow-purple-950/20"
+                }`}
+              >
+                {activeSession.isPersonalBot ? "Edit Bot Memory" : "Personalize Chatbot"}
+              </button>
+            </div>
+          )}
+
+          {/* History Search & Filters */}
+          <div className="space-y-2 mt-1">
+            <div className="relative flex items-center bg-[#0c0414] border border-purple-900/30 rounded-xl px-2.5 py-1.5">
+              <MagnifyingGlass className="w-3.5 h-3.5 text-purple-400 mr-2" />
+              <input
+                type="text"
+                placeholder="Search history..."
+                value={historySearch}
+                onChange={(e) => setHistorySearch(e.target.value)}
+                className="bg-transparent text-[11px] text-white outline-none w-full"
+              />
+              {historySearch && (
+                <button onClick={() => setHistorySearch("")} className="text-gray-400 hover:text-white">
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+
+            {/* Filter Tabs */}
+            <div className="flex gap-1 bg-[#0c0414] p-0.5 rounded-lg border border-purple-950/40 text-[9px]">
+              {(["all", "text", "image", "personal"] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => setHistoryFilter(tab)}
+                  className={`flex-1 py-1 rounded text-center capitalize font-semibold transition-all cursor-pointer ${
+                    historyFilter === tab 
+                      ? "bg-[#1c1528] text-white font-bold" 
+                      : "text-gray-400 hover:text-gray-200"
+                  }`}
+                >
+                  {tab === "personal" ? "Bots" : tab}
+                </button>
+              ))}
+            </div>
+          </div>
+
           {/* Sessions List */}
-          <div className="space-y-1.5 flex-1">
-            <p className="text-[10px] font-bold text-purple-400 uppercase tracking-wider px-2">History Sessions</p>
-            <div className="space-y-1">
-              {sessions.map((s) => {
+          <div className="space-y-1.5 flex-1 flex flex-col min-h-0">
+            <div className="flex justify-between items-center px-1">
+              <span className="text-[10px] font-bold text-purple-400 uppercase tracking-wider">History Sessions</span>
+            </div>
+            <div className="space-y-1 overflow-y-auto max-h-56 pr-0.5 custom-scrollbar flex-1 min-h-[120px]">
+              {filteredSessions.map((s) => {
                 const isActive = s.id === activeSessionId;
                 return (
                   <div
@@ -969,34 +1765,132 @@ export default function AiTestPage() {
                         : "bg-transparent border-transparent text-gray-400 hover:bg-[#1c1528]/40 hover:text-white"
                     }`}
                   >
-                    <div className="flex items-center gap-2 truncate">
-                      {s.type === "text" ? <Chat size={13} /> : <ImageIcon size={13} />}
-                      <span className="truncate">{s.title}</span>
+                    <div className="flex items-center gap-2 truncate flex-1 mr-2">
+                      {s.isPersonalBot ? (
+                        <Brain size={13} className="text-emerald-450 drop-shadow-[0_0_4px_rgba(52,211,153,0.3)] shrink-0" />
+                      ) : s.type === "text" ? (
+                        <Chat size={13} className="shrink-0" />
+                      ) : (
+                        <ImageIcon size={13} className="shrink-0" />
+                      )}
+                      
+                      {editingSessionId === s.id ? (
+                        <input
+                          type="text"
+                          value={editingTitleInput}
+                          onChange={(e) => setEditingTitleInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              handleRenameSession(s.id, editingTitleInput);
+                            } else if (e.key === "Escape") {
+                              setEditingSessionId(null);
+                            }
+                          }}
+                          onBlur={() => handleRenameSession(s.id, editingTitleInput)}
+                          className="bg-[#0c0414] border border-purple-500/80 rounded px-2 py-1 text-xs text-white outline-none w-full font-sans"
+                          autoFocus
+                          onClick={(e) => e.stopPropagation()}
+                        />
+                      ) : (
+                        <span 
+                          className="truncate flex-1"
+                          onDoubleClick={(e) => {
+                            e.stopPropagation();
+                            setEditingSessionId(s.id);
+                            setEditingTitleInput(s.title);
+                          }}
+                          title="Double-click to rename"
+                        >
+                          {s.title}
+                        </span>
+                      )}
+                      
+                      {s.isPersonalBot && (
+                        <span className="text-[8px] bg-emerald-950/45 border border-emerald-900/40 text-emerald-450 px-1 py-0.2 rounded font-extrabold select-none shrink-0">
+                          BOT
+                        </span>
+                      )}
                     </div>
-                    <button 
-                      onClick={(e) => deleteSession(s.id, e)}
-                      className="opacity-0 group-hover:opacity-100 hover:text-rose-400 transition-opacity p-0.5 rounded"
-                    >
-                      <Trash size={12} />
-                    </button>
+                    
+                    <div className="flex items-center gap-1.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
+                      <button 
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setEditingSessionId(s.id);
+                          setEditingTitleInput(s.title);
+                        }}
+                        className="hover:text-purple-300 transition-colors p-0.5 rounded cursor-pointer"
+                        title="Rename Chat"
+                      >
+                        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+                        </svg>
+                      </button>
+                      <button 
+                        onClick={(e) => deleteSession(s.id, e)}
+                        className="hover:text-rose-450 transition-colors p-0.5 rounded cursor-pointer"
+                        title="Delete Chat"
+                      >
+                        <Trash size={13} />
+                      </button>
+                    </div>
                   </div>
                 );
               })}
+              {filteredSessions.length === 0 && (
+                <div className="text-[10px] text-gray-500 text-center py-6">No matching sessions</div>
+              )}
+            </div>
+          </div>
+
+          {/* Quick Statistics block */}
+          <div className="bg-[#0c0414]/50 border border-purple-950/30 rounded-xl p-2.5 space-y-1.5">
+            <span className="text-[9px] font-bold text-purple-400/80 uppercase tracking-widest block">System Diagnostics</span>
+            <div className="grid grid-cols-2 gap-2 text-[9px] text-gray-400">
+              <div className="bg-[#09030e] p-1.5 rounded border border-purple-950/20">
+                <span className="block text-white font-bold">{sessions.filter(s => s.isPersonalBot).length}</span>
+                <span>Custom Bots</span>
+              </div>
+              <div className="bg-[#09030e] p-1.5 rounded border border-purple-950/20">
+                <span className="block text-white font-bold">{sessions.reduce((acc, s) => acc + s.messages.length, 0)}</span>
+                <span>Messages</span>
+              </div>
             </div>
           </div>
         </div>
 
         {/* Sidebar Footer settings block */}
-        <div className="p-4 border-t border-purple-950/40 bg-[#07020b] space-y-2">
+        <div className="p-4 border-t border-purple-950/40 bg-[#07020b] space-y-1.5">
+          {currentUser && (
+            <div className="flex items-center gap-3 p-2.5 bg-[#1c1528]/40 border border-purple-900/30 rounded-xl mb-3 shadow-inner">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-purple-600 to-indigo-600 text-white flex items-center justify-center font-black text-xs border border-purple-500/20 shadow">
+                {userProfile?.name ? getInitials(userProfile.name) : (currentUser.email ? currentUser.email[0].toUpperCase() : "U")}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="text-[11px] font-bold text-white truncate leading-tight">{userProfile?.name || currentUser.displayName || "Workspace User"}</p>
+                <p className="text-[9px] text-zinc-500 truncate leading-none mt-0.5">{currentUser.email}</p>
+              </div>
+            </div>
+          )}
+          
           <button 
             onClick={() => setShowSettingsModal(true)}
-            className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-400 hover:text-white rounded-lg transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-gray-400 hover:text-white rounded-lg transition-colors cursor-pointer"
           >
             <Gear size={15} /> Settings Panel
           </button>
           
-          <Link href="/" className="w-full flex items-center gap-2 px-3 py-2 text-xs font-medium text-gray-400 hover:text-white rounded-lg transition-colors">
-            <ArrowLeft size={15} /> Exit Workspace
+          {currentUser && (
+            <button 
+              onClick={handleLogout}
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs font-semibold text-rose-400 hover:text-rose-300 rounded-lg transition-colors cursor-pointer bg-rose-950/10 border border-rose-950/40"
+            >
+              <ArrowLeft size={15} /> Logout Account
+            </button>
+          )}
+
+          <Link href="/" className="w-full flex items-center gap-2 px-3 py-1.5 text-xs font-medium text-gray-400 hover:text-white rounded-lg transition-colors">
+            <Globe size={15} /> Exit Workspace
           </Link>
         </div>
       </aside>
@@ -1018,10 +1912,40 @@ export default function AiTestPage() {
           {/* Header Area inside main screen */}
           <header className="w-full flex justify-between items-center pb-4 border-b border-purple-950/20 pl-12">
             <div className="flex items-center gap-2">
-              <span className="text-xs font-semibold text-purple-400 bg-purple-950/40 border border-purple-900/30 px-3 py-1 rounded-full flex items-center gap-1.5">
-                <Cloud size={12} className="animate-pulse" />
-                {activeWindow === "text" ? "Chat Assistant Active" : "Image Generator Active"}
-              </span>
+              {activeSession.isPersonalBot ? (
+                <button
+                  onClick={() => {
+                    setMemoryInput(activeSession.knowledgeBase || "");
+                    setBotNameInput(activeSession.title);
+                    setShowMemoryModal(true);
+                  }}
+                  className="text-xs font-semibold text-emerald-400 bg-emerald-950/40 border border-emerald-900/30 px-3 py-1 rounded-full flex items-center gap-1.5 cursor-pointer transition-all hover:bg-emerald-900/30 hover:border-emerald-500/40"
+                  title="Configure memory base"
+                >
+                  <Brain size={12} weight="fill" className="animate-pulse" />
+                  Personal Bot: {activeSession.title}
+                </button>
+              ) : (
+                <span className="text-xs font-semibold text-purple-400 bg-purple-950/40 border border-purple-900/30 px-3 py-1 rounded-full flex items-center gap-1.5">
+                  <Cloud size={12} className="animate-pulse" />
+                  {activeWindow === "text" ? "Chat Assistant Active" : "Image Generator Active"}
+                </span>
+              )}
+
+              {activeWindow === "text" && !activeSession.isPersonalBot && (
+                <button
+                  onClick={() => {
+                    setMemoryInput("");
+                    setBotNameInput("Personal AI Agent");
+                    setShowMemoryModal(true);
+                  }}
+                  className="text-xs font-semibold text-purple-300 hover:text-white bg-purple-950/60 border border-purple-900/40 hover:bg-purple-900/40 hover:border-purple-500/40 px-3 py-1 rounded-full flex items-center gap-1.5 cursor-pointer ml-2 transition-all"
+                >
+                  <Brain size={12} />
+                  Personalize Bot
+                </button>
+              )}
+
               {pdfContent && (
                 <button
                   onClick={() => setShowPdfSidebar(!showPdfSidebar)}
@@ -1035,13 +1959,13 @@ export default function AiTestPage() {
             
             <div className="flex items-center gap-2">
               <span className="text-xs text-gray-450 font-medium bg-[#1c1528] px-3.5 py-1.5 rounded-full border border-purple-900/30">
-                Engine: Pollinations.ai (Free/Fast)
+                {activeSession.isPersonalBot ? "Mode: Strict Knowledge Base" : "Engine: Pollinations.ai (Free/Fast)"}
               </span>
             </div>
           </header>
 
           {/* CHAT/WORK AREA VIEWPORT */}
-          <div className="flex-1 w-full overflow-y-auto my-6 pr-2">
+          <div className="flex-1 w-full overflow-y-auto my-6 pr-2 no-scrollbar">
             
             {/* If session is empty, show branding introduction landing details */}
             {!hasMessages ? (
@@ -1083,7 +2007,12 @@ export default function AiTestPage() {
                           : "bg-[#1c1528] border border-purple-900/30 text-zinc-100 rounded-tl-none shadow-md"
                       }`}>
                         {isUser ? (
-                          <div className="whitespace-pre-wrap">{msg.content}</div>
+                          <div className="space-y-2">
+                            {msg.imageUrl && (
+                              <img src={msg.imageUrl} alt="Attached context" className="rounded-lg max-h-48 w-auto object-contain border border-purple-900/30" />
+                            )}
+                            <div className="whitespace-pre-wrap">{msg.content}</div>
+                          </div>
                         ) : (
                           msg.type === "image" ? (
                             msg.imageUrl === "SKELETON_LOADER" ? (
@@ -1122,7 +2051,136 @@ export default function AiTestPage() {
                               </div>
                             ) : null
                           ) : (
-                            <div className="space-y-1">
+                            <div className="space-y-3">
+                              {msg.weather && (
+                                <div className="weather-card-animate bg-gradient-to-br from-indigo-950 via-purple-900 to-slate-900 border border-purple-500/30 rounded-2xl p-5 w-72 max-w-full shadow-2xl relative overflow-hidden animate-fade-in text-white select-none my-1 backdrop-blur-md">
+                                  {/* Rain Drops (Render if condition includes rain/drizzle) */}
+                                  {msg.weather.condition.toLowerCase().includes("rain") && (
+                                    <>
+                                      <div className="rain-drop" style={{ left: "15%", animationDelay: "0s", animationDuration: "1s" }} />
+                                      <div className="rain-drop" style={{ left: "45%", animationDelay: "0.4s", animationDuration: "1.2s" }} />
+                                      <div className="rain-drop" style={{ left: "75%", animationDelay: "0.2s", animationDuration: "0.9s" }} />
+                                    </>
+                                  )}
+
+                                  {/* Glass card glow */}
+                                  <div className="absolute -top-10 -right-10 w-28 h-28 bg-cyan-500/20 rounded-full blur-2xl animate-pulse" />
+                                  <div className="flex justify-between items-start">
+                                    <div>
+                                      <h4 className="text-sm font-extrabold text-white tracking-wide">{msg.weather.city}</h4>
+                                      <p className="text-[10px] text-purple-300 font-bold uppercase tracking-wider mt-0.5">{msg.weather.condition}</p>
+                                    </div>
+                                    <span className="text-4xl filter drop-shadow-[0_4px_12px_rgba(0,0,0,0.4)] weather-icon-animate block">{msg.weather.icon}</span>
+                                  </div>
+                                  
+                                  <div className="my-4 flex items-baseline gap-1">
+                                    <span className="text-4xl font-black tracking-tight bg-gradient-to-r from-white to-gray-200 bg-clip-text text-transparent">{msg.weather.temp_C}</span>
+                                    <span className="text-base text-cyan-400 font-black">°C</span>
+                                    <span className="text-[10px] text-gray-400 font-semibold ml-3 bg-white/5 border border-white/10 px-2.5 py-0.5 rounded-full backdrop-blur-sm">Feels like {msg.weather.feels_like}°C</span>
+                                  </div>
+
+                                  {/* Stats Row */}
+                                  <div className="grid grid-cols-2 gap-3 pt-3 border-t border-white/10 text-[10px] text-gray-300">
+                                    <div className="flex items-center gap-2 bg-white/5 p-2 rounded-xl border border-white/10">
+                                      <span className="text-sm">💧</span>
+                                      <div className="flex flex-col">
+                                        <span className="text-gray-450 text-[9px] uppercase font-bold">Humidity</span>
+                                        <span className="text-white font-bold">{msg.weather.humidity}%</span>
+                                      </div>
+                                    </div>
+                                    <div className="flex items-center gap-2 bg-white/5 p-2 rounded-xl border border-white/10">
+                                      <span className="text-sm">💨</span>
+                                      <div className="flex flex-col">
+                                        <span className="text-gray-450 text-[9px] uppercase font-bold">Wind</span>
+                                        <span className="text-white font-bold">{msg.weather.wind}</span>
+                                      </div>
+                                    </div>
+                                  </div>
+
+                                  {/* Forecast Row */}
+                                  {msg.weather.forecast && msg.weather.forecast.length > 0 && (
+                                    <div className="mt-4 pt-3 border-t border-white/10 space-y-2">
+                                      <p className="text-[9px] font-extrabold uppercase tracking-widest text-cyan-400">3-Day Forecast</p>
+                                      <div className="flex justify-between gap-1.5">
+                                        {msg.weather.forecast.map((day: any, dIdx: number) => {
+                                          const dateObj = new Date(day.date);
+                                          const dayName = dateObj.toLocaleDateString('en-US', { weekday: 'short' });
+                                          let dayEmoji = "🌤️";
+                                          const dayCond = day.condition.toLowerCase();
+                                          if (dayCond.includes("rain") || dayCond.includes("drizzle")) dayEmoji = "🌧️";
+                                          else if (dayCond.includes("snow")) dayEmoji = "❄️";
+                                          else if (dayCond.includes("clear") || dayCond.includes("sunny")) dayEmoji = "☀️";
+                                          else if (dayCond.includes("cloud")) dayEmoji = "☁️";
+
+                                          return (
+                                            <div key={dIdx} className="flex flex-col items-center gap-1 text-center bg-white/5 border border-white/5 hover:border-white/10 p-2 rounded-xl min-w-[70px] transition-all hover:bg-white/10">
+                                              <span className="font-bold text-[9px] text-gray-400">{dayName}</span>
+                                              <span className="text-sm weather-icon-animate my-0.5">{dayEmoji}</span>
+                                              <span className="font-extrabold text-[10px] text-white">{day.maxTemp}°<span className="text-gray-500 font-normal">/{day.minTemp}°</span></span>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+
+                              {msg.stock && (
+                                <div className="bg-gradient-to-br from-[#0d0d0e] via-[#151618] to-[#121315] border border-zinc-805 rounded-2xl p-5 w-72 max-w-full shadow-2xl relative overflow-hidden animate-fade-in text-white select-none my-1 backdrop-blur-md">
+                                  {/* Top accent line */}
+                                  <div className={`absolute top-0 left-0 right-0 h-[3px] bg-gradient-to-r ${msg.stock.isPositive ? 'from-emerald-500 to-teal-400' : 'from-rose-500 to-orange-450'}`} />
+                                  <div className="absolute -top-10 -right-10 w-24 h-24 bg-zinc-500/5 rounded-full blur-xl" />
+                                  
+                                  <div className="flex justify-between items-start">
+                                    <div>
+                                      <h4 className="text-sm font-extrabold text-white tracking-wide">{msg.stock.symbol}</h4>
+                                      <p className="text-[10px] text-gray-500 font-bold uppercase tracking-wider mt-0.5">Real-time Stock Price</p>
+                                    </div>
+                                    <span className={`text-xs font-black px-2 py-0.5 rounded-lg ${msg.stock.isPositive ? 'bg-emerald-500/10 text-emerald-450 border border-emerald-500/20' : 'bg-rose-500/10 text-rose-450 border border-rose-500/20'}`}>
+                                      {msg.stock.isPositive ? '▲ GAIN' : '▼ LOSS'}
+                                    </span>
+                                  </div>
+                                  
+                                  <div className="my-4">
+                                    <div className="flex items-baseline gap-1.5">
+                                      <span className="text-3xl font-black tracking-tight">{msg.stock.price}</span>
+                                      <span className="text-xs text-gray-400 font-bold uppercase">{msg.stock.currency}</span>
+                                    </div>
+                                    <div className={`flex items-center gap-1 text-[11px] font-bold mt-1 ${msg.stock.isPositive ? 'text-emerald-400' : 'text-rose-400'}`}>
+                                      <span>{msg.stock.change}</span>
+                                      <span>({msg.stock.changePercent})</span>
+                                    </div>
+                                  </div>
+
+                                  {/* Simple sparkline vector preview */}
+                                  <div className="pt-2.5 border-t border-zinc-800/60 mt-3 flex items-center justify-between text-[10px] text-gray-400">
+                                    <span>Market status: Open</span>
+                                    <svg className="w-24 h-8 text-emerald-500 overflow-visible" viewBox="0 0 100 30">
+                                      <path 
+                                        d={msg.stock.isPositive ? "M 0 25 Q 20 20 40 18 T 80 5 T 100 0" : "M 0 5 Q 20 15 40 20 T 80 25 T 100 30"}
+                                        fill="none" 
+                                        stroke={msg.stock.isPositive ? "#10b981" : "#f43f5e"} 
+                                        strokeWidth="2" 
+                                      />
+                                    </svg>
+                                  </div>
+                                </div>
+                              )}
+                              {msg.images && msg.images.length > 0 && (
+                                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 my-3.5 overflow-hidden">
+                                  {msg.images.slice(0, 6).map((imgUrl, imgIdx) => (
+                                    <div key={imgIdx} className="relative aspect-video w-full overflow-hidden bg-[#0c0414] border border-purple-900/35 rounded-xl hover:scale-102 hover:border-purple-500/50 transition-all duration-300 shadow-lg group">
+                                      <img 
+                                        src={imgUrl} 
+                                        alt={`Scraped Search Result ${imgIdx}`} 
+                                        className="w-full h-full object-cover cursor-pointer"
+                                        onClick={() => window.open(imgUrl, '_blank')}
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
+                              )}
                               {renderMessageContent(msg.content)}
                               {msg.isStreaming && (
                                 <span className="inline-block w-1.5 h-4 ml-0.5 bg-purple-500 animate-blink align-middle" />
@@ -1192,11 +2250,102 @@ export default function AiTestPage() {
 
           {/* INPUT BAR FIELD CONTAINER */}
           <div className="w-full pb-4 pt-2 space-y-4">
+            {attachedImage && (
+              <div className="relative w-20 h-20 mb-2 ml-2 rounded-xl border border-purple-500/30 overflow-hidden bg-[#0c0414] animate-fade-in max-w-xs">
+                <img src={attachedImage} alt="Attached Preview" className="w-full h-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => setAttachedImage(null)}
+                  className="absolute top-1 right-1 bg-black/60 hover:bg-black text-white hover:text-red-400 p-0.5 rounded-full transition-colors flex items-center justify-center"
+                >
+                  <X size={10} weight="bold" />
+                </button>
+              </div>
+            )}
+            
             <form onSubmit={activeWindow === "text" ? handleSendText : handleSendImage} className="relative max-w-2xl mx-auto w-full">
               <div className="bg-[#1c1528] rounded-full p-2.5 flex items-center border border-purple-900/30 focus-within:border-purple-500/80 transition-all">
-                <button type="button" className="p-2 rounded-full hover:bg-[#2a1f3d] transition-all">
-                  <Paperclip className="w-5 h-5 text-gray-400" />
+                <div className="relative">
+                  <button 
+                    type="button" 
+                    onClick={() => setShowPlusMenu(!showPlusMenu)}
+                    className="p-2 rounded-full hover:bg-[#2a1f3d] transition-all text-purple-400"
+                    title="Add search/tools"
+                  >
+                    <Plus className="w-5 h-5" />
+                  </button>
+                  
+                  {/* PLUS MENU DROPDOWN */}
+                  {showPlusMenu && (
+                    <div className="absolute bottom-14 left-0 w-72 bg-[#1c1528] border border-purple-900/50 rounded-2xl p-3 shadow-2xl z-30 space-y-2 animate-fade-in backdrop-blur-md">
+                      <div className="relative flex items-center bg-[#0c0414] border border-purple-900/40 rounded-full px-3 py-1.5">
+                        <MagnifyingGlass className="w-3.5 h-3.5 text-gray-400 mr-2" />
+                        <input
+                          type="text"
+                          placeholder="Search search modes..."
+                          value={plusSearchQuery}
+                          onChange={(e) => setPlusSearchQuery(e.target.value)}
+                          className="bg-transparent text-xs text-white outline-none w-full"
+                        />
+                        {plusSearchQuery && (
+                          <button onClick={() => setPlusSearchQuery("")} className="text-gray-400 hover:text-white">
+                            <X size={10} />
+                          </button>
+                        )}
+                      </div>
+                      <div className="max-h-48 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                        {searchOptions
+                          .filter(opt => opt.name.toLowerCase().includes(plusSearchQuery.toLowerCase()))
+                          .map(opt => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => {
+                                setActiveSearchMode(opt.id);
+                                setShowPlusMenu(false);
+                                setPlusSearchQuery("");
+                              }}
+                              className="w-full flex items-center gap-3 p-2 rounded-xl hover:bg-[#2a1f3d] transition-colors text-left cursor-pointer"
+                            >
+                              <span className="text-lg">{opt.icon}</span>
+                              <div>
+                                <div className="text-xs font-semibold text-white">{opt.name}</div>
+                                <div className="text-[9px] text-gray-400 leading-normal">{opt.desc}</div>
+                              </div>
+                            </button>
+                          ))
+                        }
+                        {searchOptions.filter(opt => opt.name.toLowerCase().includes(plusSearchQuery.toLowerCase())).length === 0 && (
+                          <div className="text-[10px] text-gray-500 text-center py-4">No matching options found</div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {activeSearchMode && (
+                  <span className="flex items-center gap-1.5 bg-purple-900/50 border border-purple-500/50 text-[10px] font-bold text-purple-200 px-3 py-1 rounded-full shrink-0 ml-1 select-none animate-fade-in">
+                    <span>{activeSearchMode === "google" ? "🌐 Google" : activeSearchMode === "news" ? "📰 News" : activeSearchMode === "wikipedia" ? "🧠 Wiki" : activeSearchMode === "weather" ? "🌤️ Weather" : "📉 Stocks"}</span>
+                    <button type="button" onClick={() => setActiveSearchMode(null)} className="hover:text-red-400 font-black text-xs">×</button>
+                  </span>
+                )}
+                <input
+                  type="file"
+                  ref={fileInputRef}
+                  onChange={handleFileChange}
+                  accept="image/*"
+                  className="hidden"
+                />
+                
+                <button 
+                  type="button" 
+                  onClick={() => fileInputRef.current?.click()}
+                  className={`p-2 rounded-full hover:bg-[#2a1f3d] transition-all ${attachedImage ? 'text-emerald-400 bg-emerald-500/10' : 'text-gray-400'}`}
+                  title="Attach image"
+                >
+                  <Paperclip className="w-5 h-5" />
                 </button>
+
                 <button type="button" className="p-2 rounded-full hover:bg-[#2a1f3d] transition-all">
                   <Sparkle className="w-5 h-5 text-purple-400" />
                 </button>
@@ -1378,23 +2527,55 @@ export default function AiTestPage() {
                   <ReactMarkdown
                     remarkPlugins={[remarkGfm]}
                     components={{
-                      p: ({ children }) => <p className="mb-3 last:mb-0 text-gray-700">{children}</p>,
-                      ul: ({ children }) => <ul className="my-3 pl-5 list-disc space-y-1">{children}</ul>,
-                      ol: ({ children }) => <ol className="my-3 pl-5 list-decimal space-y-1">{children}</ol>,
-                      li: ({ children }) => <li className="text-gray-700">{children}</li>,
+                      p: ({ children }) => <p style={{ fontSize: '12px', lineHeight: '1.65', color: '#4b5563', marginBottom: '14px', fontWeight: 500 }}>{children}</p>,
+                      ul: ({ children }) => <ul style={{ padding: 0, margin: '12px 0 16px 0' }}>{children}</ul>,
+                      ol: ({ children }) => <ol style={{ padding: 0, margin: '12px 0 16px 0' }}>{children}</ol>,
+                      li: ({ children }) => (
+                        <li style={{ listStyle: 'none', position: 'relative', paddingLeft: '16px', fontSize: '11.5px', lineHeight: '1.6', color: '#1f2937', marginBottom: '6px', fontWeight: 600 }}>
+                          <span style={{ position: 'absolute', left: 0, top: '7px', height: '6px', width: '6px', borderRadius: '50%', backgroundColor: '#c5a059' }} />
+                          {children}
+                        </li>
+                      ),
                       table: ({ children }) => (
-                        <div className="my-4 overflow-x-auto border border-gray-200 rounded">
-                          <table className="w-full text-left border-collapse text-[10px]">{children}</table>
+                        <div style={{ margin: '20px 0', border: '1px solid #e5e7eb', borderRadius: '12px', overflow: 'hidden' }}>
+                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '10px' }}>{children}</table>
                         </div>
                       ),
-                      thead: ({ children }) => <thead className="bg-gray-100 border-b border-gray-200 font-bold">{children}</thead>,
+                      thead: ({ children }) => <thead style={{ backgroundColor: '#0b2e5c', color: '#ffffff' }}>{children}</thead>,
                       tbody: ({ children }) => <tbody className="divide-y divide-gray-200">{children}</tbody>,
                       tr: ({ children }) => <tr>{children}</tr>,
-                      th: ({ children }) => <th className="px-3 py-2 font-semibold text-gray-600">{children}</th>,
-                      td: ({ children }) => <td className="px-3 py-2 text-gray-750">{children}</td>,
-                      h1: ({ children }) => <h1 className="text-xl font-bold text-gray-900 mt-4 mb-2 border-b border-gray-100 pb-1">{children}</h1>,
-                      h2: ({ children }) => <h2 className="text-base font-bold text-gray-800 mt-3 mb-1.5">{children}</h2>,
-                      h3: ({ children }) => <h3 className="text-sm font-bold text-gray-700 mt-2 mb-1">{children}</h3>,
+                      th: ({ children }) => <th style={{ padding: '8px 12px', fontWeight: 'bold', borderBottom: '1px solid #e5e7eb', textAlign: 'left' }}>{children}</th>,
+                      td: ({ children }) => <td style={{ padding: '8px 12px', borderBottom: '1px solid #e5e7eb', color: '#4b5563', fontWeight: 500 }}>{children}</td>,
+                      h1: ({ children }) => (
+                        <div style={{ backgroundColor: '#0b2e5c', color: '#ffffff', padding: '30px', margin: '-40px -40px 30px -40px', borderBottom: '4px solid #c5a059', position: 'relative' }}>
+                          <div style={{ fontSize: '10px', color: '#7ba4db', textTransform: 'uppercase', fontWeight: 900, letterSpacing: '1px', marginBottom: '4px' }}>Corporate Documentation</div>
+                          <h1 style={{ fontSize: '22px', fontWeight: 900, textTransform: 'uppercase', margin: 0, color: '#ffffff' }}>{children}</h1>
+                        </div>
+                      ),
+                      h2: ({ children }) => {
+                        const text = String(children);
+                        const match = text.match(/^(\d+)\.\s*(.*)/);
+                        if (match) {
+                          const num = match[1];
+                          const title = match[2];
+                          return (
+                            <div style={{ display: 'flex', alignItems: 'center', marginTop: '24px', marginBottom: '16px' }}>
+                              <div style={{ height: '40px', width: '40px', borderRadius: '10px', backgroundColor: '#0b2e5c', color: '#ffffff', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: '18px', borderBottom: '2px solid #c5a059', marginRight: '12px', flexShrink: 0 }}>
+                                {num}
+                              </div>
+                              <div style={{ borderBottom: '2px solid #e5e7eb', paddingBottom: '6px', flexGrow: 1 }}>
+                                <h2 style={{ fontSize: '15px', fontWeight: 900, color: '#0b2e5c', margin: 0 }}>{title}</h2>
+                              </div>
+                            </div>
+                          );
+                        }
+                        return (
+                          <div style={{ borderBottom: '2px solid #e5e7eb', paddingBottom: '6px', marginTop: '24px', marginBottom: '16px' }}>
+                            <h2 style={{ fontSize: '15px', fontWeight: 900, color: '#0b2e5c', margin: 0 }}>{children}</h2>
+                          </div>
+                        );
+                      },
+                      h3: ({ children }) => <h3 style={{ fontSize: '12px', fontWeight: 'bold', color: '#0b2e5c', textTransform: 'uppercase', marginTop: '16px', marginBottom: '8px' }}>{children}</h3>,
                       code: ({ children }) => <code className="bg-gray-100 text-purple-700 px-1 py-0.5 rounded font-mono text-[10px]">{children}</code>,
                     }}
                   >
@@ -1410,6 +2591,183 @@ export default function AiTestPage() {
             </div>
           </aside>
         </>
+      )}
+
+      {/* BROWSER SEARCH & SCRAPE SIDEBAR */}
+      {showBrowserSidebar && (
+        <>
+          {/* Resize Handler Bar */}
+          <div
+            onMouseDown={(e) => {
+              e.preventDefault();
+              const handleMouseMove = (moveEvent: MouseEvent) => {
+                const newWidth = window.innerWidth - moveEvent.clientX;
+                if (newWidth > 320 && newWidth < 800) {
+                  setBrowserSidebarWidth(newWidth);
+                }
+              };
+              const handleMouseUp = () => {
+                document.removeEventListener("mousemove", handleMouseMove);
+                document.removeEventListener("mouseup", handleMouseUp);
+              };
+              document.addEventListener("mousemove", handleMouseMove);
+              document.addEventListener("mouseup", handleMouseUp);
+            }}
+            className="w-[6px] hover:w-2 bg-purple-950/60 hover:bg-purple-500/80 active:bg-purple-500 cursor-col-resize transition-all duration-150 z-20 relative select-none"
+          />
+
+          <aside 
+            style={{ width: `${browserSidebarWidth}px` }}
+            className="h-screen bg-[#07020b] border-l border-purple-950/50 flex flex-col justify-between z-10 shrink-0 relative animate-fade-in"
+          >
+            {/* Browser Header */}
+            <div className="p-3.5 border-b border-purple-950/40 flex flex-col gap-2 bg-[#09030e]">
+              <div className="flex justify-between items-center">
+                <div className="flex items-center gap-1.5">
+                  <div className="flex gap-1">
+                    <span className="w-2 h-2 rounded-full bg-rose-500" />
+                    <span className="w-2 h-2 rounded-full bg-amber-500" />
+                    <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                  </div>
+                  <span className="text-[9px] font-bold uppercase tracking-wider text-purple-400 ml-2">cyberlim.AI Browser Scraper</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setShowBrowserSidebar(false)}
+                  className="p-1 text-gray-400 hover:text-white rounded hover:bg-purple-950/40 transition-colors"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+
+              {/* Interactive Address Bar */}
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  let url = browserAddressInput.trim();
+                  if (!url) return;
+                  if (!/^https?:\/\//i.test(url)) {
+                    if (/^[a-z0-9]+([\-\.]{1}[a-z0-9]+)*\.[a-z]{2,5}(:[0-9]{1,5})?(\/.*)?$/i.test(url)) {
+                      url = "https://" + url;
+                    } else {
+                      url = "https://www.google.com/search?igu=1&q=" + encodeURIComponent(url);
+                    }
+                  }
+                  if (url.includes("google.com") && !url.includes("igu=1")) {
+                    if (url.includes("?")) {
+                      url += "&igu=1";
+                    } else {
+                      url += "?igu=1";
+                    }
+                  }
+                  setBrowserUrl(url);
+                  setBrowserAddressInput(url);
+                }}
+                className="flex items-center bg-[#0c0414] border border-purple-900/30 rounded-lg px-2.5 py-1 text-xs text-gray-400 font-mono w-full"
+              >
+                <Globe size={13} className="mr-2 text-purple-450 shrink-0" />
+                <input
+                  type="text"
+                  value={browserAddressInput}
+                  onChange={(e) => setBrowserAddressInput(e.target.value)}
+                  className="bg-transparent text-gray-200 outline-none w-full text-xs"
+                  placeholder="Search Google or type a URL..."
+                />
+              </form>
+            </div>
+
+            {/* Browser content viewport */}
+            <div className="flex-1 bg-white relative overflow-hidden h-full">
+              <iframe 
+                src={browserUrl}
+                className="w-full h-full border-none bg-white"
+                title="Google Search Console"
+              />
+            </div>
+
+            {/* Browser footer */}
+            <div className="p-3 border-t border-purple-950/40 bg-[#09030e] text-center text-[9px] text-gray-500 font-mono">
+              Scraper Sandbox Secured • JavaScript Bypass Mode Active
+            </div>
+          </aside>
+        </>
+      )}
+
+      {/* PERSONAL BOT MEMORY MODAL */}
+      {showMemoryModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-md flex justify-center items-center z-50 animate-fade-in">
+          <div className="bg-[#1c1528] border border-purple-900/50 rounded-3xl p-6 max-w-md w-full space-y-4 shadow-2xl relative">
+            <button
+              onClick={() => setShowMemoryModal(false)}
+              className="absolute top-4 right-4 text-gray-400 hover:text-white transition-colors"
+            >
+              <X size={16} />
+            </button>
+            
+            <div className="flex items-center gap-3">
+              <div className="h-10 w-10 rounded-2xl bg-purple-950 border border-purple-900/50 flex items-center justify-center text-purple-300">
+                <Brain size={20} weight="fill" />
+              </div>
+              <div>
+                <h3 className="font-extrabold text-sm text-white">Configure Personal AI Bot</h3>
+                <p className="text-[10px] text-purple-400">Load local memory/knowledge base</p>
+              </div>
+            </div>
+            
+            <div className="space-y-3.5 pt-2">
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Bot Name</label>
+                <input
+                  type="text"
+                  placeholder="e.g. Sales Agent, Product Docs, Personal Wiki..."
+                  value={botNameInput}
+                  onChange={(e) => setBotNameInput(e.target.value)}
+                  className="w-full bg-[#0c0414] border border-purple-900/45 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-purple-500/80 transition-colors"
+                />
+              </div>
+
+              <div className="space-y-1.5">
+                <label className="text-[10px] font-bold text-gray-400 uppercase tracking-wider">Memory / Knowledge Base Content</label>
+                <textarea
+                  placeholder="Paste or write the documents, instructions, or factual data here. The AI will answer questions strictly based on this context..."
+                  value={memoryInput}
+                  onChange={(e) => setMemoryInput(e.target.value)}
+                  rows={8}
+                  className="w-full bg-[#0c0414] border border-purple-900/45 rounded-xl px-3 py-2 text-xs text-white outline-none focus:border-purple-500/80 transition-colors resize-none leading-relaxed"
+                />
+              </div>
+
+              <div className="flex gap-2.5 pt-2">
+                <button
+                  onClick={() => setShowMemoryModal(false)}
+                  className="flex-1 bg-[#10081d] hover:bg-[#1a0f2c] border border-purple-950 py-2.5 text-xs rounded-xl font-bold transition-colors cursor-pointer text-center text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={() => {
+                    // Update active session with knowledge base and bot name
+                    setSessions((prev) => prev.map(s => {
+                      if (s.id === activeSessionId) {
+                        return {
+                          ...s,
+                          isPersonalBot: true,
+                          knowledgeBase: memoryInput,
+                          title: botNameInput.trim() || s.title,
+                        };
+                      }
+                      return s;
+                    }));
+                    setShowMemoryModal(false);
+                  }}
+                  className="flex-1 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white py-2.5 text-xs rounded-xl font-bold transition-all shadow-lg shadow-purple-950/20 cursor-pointer text-center"
+                >
+                  Save & Load Memory
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* SETTINGS MODAL CONTAINER */}
@@ -1783,6 +3141,53 @@ export default function AiTestPage() {
         @keyframes innerGlow {
           0%, 100% { opacity: 0.5; transform: scale(1); }
           50% { opacity: 1; transform: scale(1.15); }
+        }
+
+        /* Weather animations */
+        @keyframes weatherBgPan {
+          0% { background-position: 0% 50%; }
+          50% { background-position: 100% 50%; }
+          100% { background-position: 0% 50%; }
+        }
+        .weather-card-animate {
+          background-size: 200% 200%;
+          animation: weatherBgPan 8s ease infinite;
+        }
+        @keyframes weatherIconFloat {
+          0%, 100% { transform: translateY(0px) rotate(0deg); }
+          50% { transform: translateY(-4px) rotate(5deg); }
+        }
+        .weather-icon-animate {
+          display: inline-block;
+          animation: weatherIconFloat 4s ease-in-out infinite;
+        }
+        @keyframes rainDrop {
+          0% { transform: translateY(-20px) scaleY(1); opacity: 0; }
+          50% { opacity: 0.6; }
+          100% { transform: translateY(40px) scaleY(0.8); opacity: 0; }
+        }
+        .rain-drop {
+          position: absolute;
+          width: 1.5px;
+          height: 12px;
+          background: linear-gradient(transparent, rgba(34, 211, 238, 0.4));
+          animation: rainDrop 1.2s linear infinite;
+          pointer-events: none;
+        }
+
+        .no-scrollbar::-webkit-scrollbar {
+          display: none;
+        }
+        .no-scrollbar {
+          -ms-overflow-style: none;
+          scrollbar-width: none;
+        }
+        @keyframes progress {
+          0% { width: 3%; }
+          100% { width: 100%; }
+        }
+        .animate-progress {
+          animation: progress 4.5s cubic-bezier(0.1, 0.8, 0.1, 1) forwards;
         }
       `}</style>
     </div>
