@@ -1,3 +1,9 @@
+# Design System / Theme Tokens
+
+The project uses Tailwind CSS (v4) with CSS variables and custom classes defined in `globals.css`.
+
+## CSS Variables & Theme Configuration
+```css
 @import "tailwindcss";
 
 :root {
@@ -28,7 +34,6 @@
   --color-accent-custom: rgb(var(--accent));
 }
 
-/* ─── FONT ──────────────────────────────────── */
 body {
   background-color: var(--background);
   color: var(--foreground);
@@ -36,7 +41,10 @@ body {
   overflow-x: hidden;
   position: relative;
 }
+```
 
+## Custom Theme Classes & Animations
+```css
 /* ─── BACKGROUND BLOBS ────────────────────── */
 .bg-blob-container {
   position: fixed;
@@ -134,14 +142,6 @@ body {
 .grad-hero    { background: linear-gradient(135deg, #1e1b4b 0%, #312e81 25%, #1e3a8a 60%, #0f172a 100%); }
 .grad-leads-hero { background: linear-gradient(135deg, #0f172a 0%, #1e3a8a 35%, #2563eb 70%, #1d4ed8 100%); }
 
-/* ─── SCROLLBAR ───────────────────────────── */
-::-webkit-scrollbar { width: 5px; height: 5px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(99,102,241,0.3); border-radius: 9999px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(99,102,241,0.55); }
-.no-scrollbar::-webkit-scrollbar { display: none; }
-.no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
-
 /* ─── ANIMATIONS ──────────────────────────── */
 @keyframes float-slow {
   0%, 100% { transform: translateY(0px) rotate(0deg); }
@@ -155,15 +155,6 @@ body {
   0%   { transform: scale(1); opacity: 1; }
   50%  { transform: scale(2.2); opacity: 0; }
   100% { transform: scale(1); opacity: 1; }
-}
-@keyframes shimmer {
-  from { background-position: -300% 0; }
-  to   { background-position: 300% 0; }
-}
-@keyframes gradient-shift {
-  0%   { background-position: 0% 50%; }
-  50%  { background-position: 100% 50%; }
-  100% { background-position: 0% 50%; }
 }
 @keyframes glow-pulse {
   0%, 100% { box-shadow: 0 0 12px rgba(37,99,235,0.25); }
@@ -237,7 +228,6 @@ body {
 .lead-row:hover { background: linear-gradient(90deg, rgba(239,246,255,0.8) 0%, rgba(224,242,254,0.6) 100%); }
 .dark .lead-row:hover { background: linear-gradient(90deg, rgba(30,58,138,0.2) 0%, rgba(29,78,216,0.15) 100%); }
 
-/* ─── SCORE RING ──────────────────────────── */
 .score-ring {
   background: conic-gradient(#2563eb calc(var(--pct) * 3.6deg), #e2e8f0 0deg);
 }
@@ -245,4 +235,4 @@ body {
 .font-serif-playfair {
   font-family: var(--font-playfair), serif;
 }
-
+```
