@@ -85,6 +85,16 @@ export default function AiTestPage() {
   const [userProfile, setUserProfile] = useState<any>(null);
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitleInput, setEditingTitleInput] = useState("");
+  const [isMobile, setIsMobile] = useState(false);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    handleResize();
+    window.addEventListener("resize", handleResize);
+    return () => window.removeEventListener("resize", handleResize);
+  }, []);
 
   const getInitials = (name: string) => {
     if (!name) return "U";
@@ -1642,10 +1652,18 @@ Answer:`;
         <div className="w-[10rem] h-[20rem] bg-gradient-to-r from-white to-blue-300"></div>
       </div>
 
+      {/* Mobile Sidebar Backdrop */}
+      {sidebarOpen && (
+        <div 
+          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 md:hidden animate-fade-in"
+        />
+      )}
+
       {/* SIDEBAR COMPONENT */}
       <aside 
-        className={`h-screen bg-[#09030e] border-r border-purple-950/50 flex flex-col justify-between z-20 shrink-0 transition-all duration-350 ${
-          sidebarOpen ? "w-64" : "w-0 -translate-x-full overflow-hidden"
+        className={`h-screen bg-[#09030e] border-r border-purple-950/50 flex flex-col justify-between z-40 md:z-20 shrink-0 transition-all duration-350 fixed md:relative ${
+          sidebarOpen ? "w-64 translate-x-0" : "w-0 -translate-x-full md:w-0 overflow-hidden"
         }`}
       >
         <div className="p-4 flex flex-col gap-4 overflow-y-auto flex-1 no-scrollbar">
@@ -1655,14 +1673,24 @@ Answer:`;
               <img src="http://hextaui.com/logo.svg" width={26} height={26} alt="cyberlim.AI Logo" className="invert" />
               <span className="font-bold text-sm tracking-tight text-white">cyberlim.AI</span>
             </div>
-            {/* Active session counter */}
-            <span className="text-[9px] bg-purple-950 border border-purple-900/40 text-purple-400 font-bold px-2 py-0.5 rounded-full select-none">
-              {sessions.length} chats
-            </span>
+            
+            <div className="flex items-center gap-1.5">
+              {/* Active session counter */}
+              <span className="hidden sm:inline-block text-[9px] bg-purple-950 border border-purple-900/40 text-purple-400 font-bold px-2 py-0.5 rounded-full select-none">
+                {sessions.length} chats
+              </span>
+              <button 
+                type="button"
+                onClick={() => setSidebarOpen(false)}
+                className="md:hidden p-1.5 bg-[#1c1528] hover:bg-[#2a1f3d] text-white rounded-lg transition-colors border border-purple-900/30 cursor-pointer"
+              >
+                <X size={12} weight="bold" />
+              </button>
+            </div>
           </div>
 
           {/* New Chat Actions */}
-          <div className="grid grid-cols-2 gap-2">
+          <div className="grid grid-cols-2 gap-2 md:grid">
             <button 
               onClick={() => createNewSession("text")}
               className="flex items-center justify-center gap-1.5 bg-[#1c1528] hover:bg-[#2a1f3d] border border-purple-900/30 text-xs font-semibold py-2 rounded-xl transition-colors cursor-pointer"
@@ -1910,8 +1938,8 @@ Answer:`;
         <main className="flex-1 flex flex-col items-center justify-between px-6 py-6 w-full max-w-4xl mx-auto overflow-hidden relative z-10">
           
           {/* Header Area inside main screen */}
-          <header className="w-full flex justify-between items-center pb-4 border-b border-purple-950/20 pl-12">
-            <div className="flex items-center gap-2">
+          <header className="w-full flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-4 border-b border-purple-950/20 pl-12">
+            <div className="flex flex-wrap items-center gap-2">
               {activeSession.isPersonalBot ? (
                 <button
                   onClick={() => {
@@ -2277,7 +2305,7 @@ Answer:`;
                   
                   {/* PLUS MENU DROPDOWN */}
                   {showPlusMenu && (
-                    <div className="absolute bottom-14 left-0 w-72 bg-[#1c1528] border border-purple-900/50 rounded-2xl p-3 shadow-2xl z-30 space-y-2 animate-fade-in backdrop-blur-md">
+                    <div className="absolute bottom-14 left-0 w-72 max-w-[calc(100vw-2rem)] bg-[#1c1528] border border-purple-900/50 rounded-2xl p-3 shadow-2xl z-30 space-y-2 animate-fade-in backdrop-blur-md">
                       <div className="relative flex items-center bg-[#0c0414] border border-purple-900/40 rounded-full px-3 py-1.5">
                         <MagnifyingGlass className="w-3.5 h-3.5 text-gray-400 mr-2" />
                         <input
@@ -2293,7 +2321,134 @@ Answer:`;
                           </button>
                         )}
                       </div>
-                      <div className="max-h-48 overflow-y-auto space-y-1 pr-1 custom-scrollbar">
+                      
+                      {/* Search Engines Category */}
+                      <div className="text-[9px] font-bold text-purple-400/80 uppercase tracking-widest px-1 py-0.5 border-b border-purple-950/20">Search Engines</div>
+                      <div className="max-h-36 overflow-y-auto space-y-0.5 pr-1 custom-scrollbar">
+                        {searchOptions
+                          .filter(opt => opt.name.toLowerCase().includes(plusSearchQuery.toLowerCase()))
+                          .map(opt => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => {
+                                setActiveSearchMode(opt.id);
+                                setShowPlusMenu(false);
+                                setPlusSearchQuery("");
+                              }}
+                              className="w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-[#2a1f3d] transition-colors text-left cursor-pointer"
+                            >
+                              <span className="text-base">{opt.icon}</span>
+                              <div>
+                                <div className="text-xs font-semibold text-white">{opt.name}</div>
+                                <div className="text-[9px] text-gray-400 leading-none mt-0.5">{opt.desc}</div>
+                              </div>
+                            </button>
+                          ))
+                        }
+                      </div>
+
+                      {/* Workspace Tools Category */}
+                      <div className="text-[9px] font-bold text-purple-400/80 uppercase tracking-widest px-1 py-0.5 mt-1 border-b border-purple-950/20">Workspace Tools</div>
+                      <div className="space-y-0.5 max-h-44 overflow-y-auto pr-1 custom-scrollbar">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setIsVoiceAgentActive(true);
+                            setShowPlusMenu(false);
+                          }}
+                          className="w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-[#2a1f3d] transition-colors text-left cursor-pointer"
+                        >
+                          <span className="text-base">🎙️</span>
+                          <div>
+                            <div className="text-xs font-semibold text-white">Voice Agent Session</div>
+                            <div className="text-[9px] text-gray-400 leading-none mt-0.5">Start voice conversation</div>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            fileInputRef.current?.click();
+                            setShowPlusMenu(false);
+                          }}
+                          className="w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-[#2a1f3d] transition-colors text-left cursor-pointer"
+                        >
+                          <span className="text-base">📎</span>
+                          <div>
+                            <div className="text-xs font-semibold text-white">Attach Image Context</div>
+                            <div className="text-[9px] text-gray-400 leading-none mt-0.5">Upload image from device</div>
+                          </div>
+                        </button>
+
+                        {activeWindow === "text" && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setMemoryInput(activeSession.knowledgeBase || "");
+                              setBotNameInput(activeSession.isPersonalBot ? activeSession.title : "Personal AI Agent");
+                              setShowMemoryModal(true);
+                              setShowPlusMenu(false);
+                            }}
+                            className="w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-[#2a1f3d] transition-colors text-left cursor-pointer"
+                          >
+                            <span className="text-base">🤖</span>
+                            <div>
+                              <div className="text-xs font-semibold text-white">Personalize Chatbot</div>
+                              <div className="text-[9px] text-gray-400 leading-none mt-0.5">Configure memory base</div>
+                            </div>
+                          </button>
+                        )}
+
+                        {pdfContent && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setShowPdfSidebar(!showPdfSidebar);
+                              setShowPlusMenu(false);
+                            }}
+                            className="w-full flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-[#2a1f3d] transition-colors text-left cursor-pointer"
+                          >
+                            <span className="text-base">📄</span>
+                            <div>
+                              <div className="text-xs font-semibold text-white">{showPdfSidebar ? "Hide PDF Panel" : "Show PDF Panel"}</div>
+                              <div className="text-[9px] text-gray-400 leading-none mt-0.5">Toggle PDF workspace sidebar</div>
+                            </div>
+                          </button>
+                        )}
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            createNewSession("text");
+                            setShowPlusMenu(false);
+                          }}
+                          className="w-full flex md:hidden items-center gap-2.5 p-1.5 rounded-lg hover:bg-[#2a1f3d] transition-colors text-left cursor-pointer"
+                        >
+                          <span className="text-base">💬</span>
+                          <div>
+                            <div className="text-xs font-semibold text-white">New Text Chat</div>
+                            <div className="text-[9px] text-gray-400 leading-none mt-0.5">Create new text session</div>
+                          </div>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            createNewSession("image");
+                            setShowPlusMenu(false);
+                          }}
+                          className="w-full flex md:hidden items-center gap-2.5 p-1.5 rounded-lg hover:bg-[#2a1f3d] transition-colors text-left cursor-pointer"
+                        >
+                          <span className="text-base">🎨</span>
+                          <div>
+                            <div className="text-xs font-semibold text-white">New Image Canvas</div>
+                            <div className="text-[9px] text-gray-400 leading-none mt-0.5">Start image generation canvas</div>
+                          </div>
+                        </button>
+                      </div>
+
+                      <div className="max-h-48 overflow-y-auto space-y-1 pr-1 custom-scrollbar hidden">
                         {searchOptions
                           .filter(opt => opt.name.toLowerCase().includes(plusSearchQuery.toLowerCase()))
                           .map(opt => (
@@ -2479,14 +2634,14 @@ Answer:`;
           <div
             ref={resizeRef}
             onMouseDown={startResizing}
-            className={`w-[6px] hover:w-2 bg-purple-950/60 hover:bg-purple-500/80 active:bg-purple-500 cursor-col-resize transition-all duration-150 z-20 relative select-none ${
+            className={`hidden md:block w-[6px] hover:w-2 bg-purple-950/60 hover:bg-purple-500/80 active:bg-purple-500 cursor-col-resize transition-all duration-150 z-20 relative select-none ${
               isResizing ? "bg-purple-500 w-2" : ""
             }`}
           />
 
           <aside 
-            style={{ width: `${pdfWidth}px` }}
-            className="h-screen bg-[#07020b] border-l border-purple-950/50 flex flex-col justify-between z-10 shrink-0 relative"
+            style={{ width: isMobile ? "100%" : `${pdfWidth}px` }}
+            className="h-screen bg-[#07020b] border-l border-purple-950/50 flex flex-col justify-between z-40 md:z-10 fixed md:relative right-0 top-0 w-full shrink-0"
           >
             {/* Header controls */}
             <div className="p-4 border-b border-purple-950/40 flex justify-between items-center bg-[#09030e]">
@@ -2613,12 +2768,12 @@ Answer:`;
               document.addEventListener("mousemove", handleMouseMove);
               document.addEventListener("mouseup", handleMouseUp);
             }}
-            className="w-[6px] hover:w-2 bg-purple-950/60 hover:bg-purple-500/80 active:bg-purple-500 cursor-col-resize transition-all duration-150 z-20 relative select-none"
+            className="hidden md:block w-[6px] hover:w-2 bg-purple-950/60 hover:bg-purple-500/80 active:bg-purple-500 cursor-col-resize transition-all duration-150 z-20 relative select-none"
           />
 
           <aside 
-            style={{ width: `${browserSidebarWidth}px` }}
-            className="h-screen bg-[#07020b] border-l border-purple-950/50 flex flex-col justify-between z-10 shrink-0 relative animate-fade-in"
+            style={{ width: isMobile ? "100%" : `${browserSidebarWidth}px` }}
+            className="h-screen bg-[#07020b] border-l border-purple-950/50 flex flex-col justify-between z-40 md:z-10 fixed md:relative right-0 top-0 w-full shrink-0 relative animate-fade-in"
           >
             {/* Browser Header */}
             <div className="p-3.5 border-b border-purple-950/40 flex flex-col gap-2 bg-[#09030e]">
