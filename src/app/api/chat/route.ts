@@ -110,10 +110,37 @@ export async function POST(req: NextRequest) {
     // For standard Hugging Face model
     const token = process.env.HF_TOKEN;
     if (!token) {
-      return NextResponse.json(
-        { error: "HF_TOKEN not set on server. Configure it on backend" },
-        { status: 500, headers: CORS_HEADERS }
-      );
+      console.warn("HF_TOKEN not set on server. Falling back to free Pollinations AI engine.");
+      
+      const response = await fetch("https://text.pollinations.ai/", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          messages: messages,
+          model: "openai",
+          stream: stream
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`Pollinations AI fallback error status ${response.status}`);
+      }
+
+      if (stream) {
+        return new NextResponse(response.body, {
+          headers: {
+            "Content-Type": "text/event-stream",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            ...CORS_HEADERS,
+          },
+        });
+      } else {
+        const text = await response.text();
+        return NextResponse.json({ result: text }, { headers: CORS_HEADERS });
+      }
     }
 
     const modelId = TEXT_MODELS[model] ?? TEXT_MODELS.mistral;
