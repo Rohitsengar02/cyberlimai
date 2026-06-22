@@ -9,6 +9,19 @@ const TEXT_MODELS: Record<string, string> = {
   phi: "microsoft/Phi-3.5-mini-instruct",
 };
 
+const CORS_HEADERS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+export async function OPTIONS() {
+  return new NextResponse(null, {
+    status: 200,
+    headers: CORS_HEADERS,
+  });
+}
+
 export async function POST(req: NextRequest) {
   try {
     // 1. Authenticate API Key
@@ -16,7 +29,7 @@ export async function POST(req: NextRequest) {
     if (!authHeader || !authHeader.startsWith("Bearer ")) {
       return NextResponse.json(
         { error: "Unauthorized: Missing or invalid Bearer token" },
-        { status: 401 }
+        { status: 401, headers: CORS_HEADERS }
       );
     }
 
@@ -24,7 +37,7 @@ export async function POST(req: NextRequest) {
     if (!apiKey) {
       return NextResponse.json(
         { error: "Unauthorized: API Key is empty" },
-        { status: 401 }
+        { status: 401, headers: CORS_HEADERS }
       );
     }
 
@@ -32,7 +45,7 @@ export async function POST(req: NextRequest) {
     if (!keyDoc.exists()) {
       return NextResponse.json(
         { error: "Unauthorized: Invalid API Key" },
-        { status: 401 }
+        { status: 401, headers: CORS_HEADERS }
       );
     }
 
@@ -40,7 +53,7 @@ export async function POST(req: NextRequest) {
     if (keyData.status !== "active") {
       return NextResponse.json(
         { error: "Unauthorized: API Key has been revoked" },
-        { status: 401 }
+        { status: 401, headers: CORS_HEADERS }
       );
     }
 
@@ -50,7 +63,7 @@ export async function POST(req: NextRequest) {
     if (!prompt) {
       return NextResponse.json(
         { error: "Missing required parameter: prompt" },
-        { status: 400 }
+        { status: 400, headers: CORS_HEADERS }
       );
     }
 
@@ -85,11 +98,12 @@ export async function POST(req: NextRequest) {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "Connection": "keep-alive",
+            ...CORS_HEADERS,
           },
         });
       } else {
         const text = await response.text();
-        return NextResponse.json({ result: text });
+        return NextResponse.json({ result: text }, { headers: CORS_HEADERS });
       }
     }
 
@@ -98,7 +112,7 @@ export async function POST(req: NextRequest) {
     if (!token) {
       return NextResponse.json(
         { error: "HF_TOKEN not set on server. Configure it on backend" },
-        { status: 500 }
+        { status: 500, headers: CORS_HEADERS }
       );
     }
 
@@ -129,7 +143,7 @@ export async function POST(req: NextRequest) {
       const errText = await res.text();
       return NextResponse.json(
         { error: `HF API error (${res.status}): ${errText}` },
-        { status: res.status }
+        { status: res.status, headers: CORS_HEADERS }
       );
     }
 
@@ -139,18 +153,19 @@ export async function POST(req: NextRequest) {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           "Connection": "keep-alive",
+          ...CORS_HEADERS,
         },
       });
     } else {
       const data = await res.json();
-      return NextResponse.json({ result: data[0]?.generated_text || data });
+      return NextResponse.json({ result: data[0]?.generated_text || data }, { headers: CORS_HEADERS });
     }
 
   } catch (err: any) {
     console.error("API Chat route error:", err);
     return NextResponse.json(
       { error: err.message || "Internal server error" },
-      { status: 500 }
+      { status: 500, headers: CORS_HEADERS }
     );
   }
 }
