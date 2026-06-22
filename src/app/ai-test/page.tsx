@@ -7,7 +7,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { auth, db } from "../../lib/firebase";
 import { onAuthStateChanged, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from "firebase/auth";
-import { doc, setDoc, deleteDoc, collection, query, orderBy, onSnapshot, getDoc } from "firebase/firestore";
+import { doc, setDoc, deleteDoc, collection, query, orderBy, onSnapshot, getDoc, where } from "firebase/firestore";
 
 interface ChatMessage {
   role: "user" | "assistant" | "system";
@@ -86,6 +86,52 @@ export default function AiTestPage() {
   const [editingSessionId, setEditingSessionId] = useState<string | null>(null);
   const [editingTitleInput, setEditingTitleInput] = useState("");
   const [isMobile, setIsMobile] = useState(false);
+  
+  // Developer API States
+  const [activeView, setActiveView] = useState<"workspace" | "api-dashboard">("workspace");
+  const [apiKeys, setApiKeys] = useState<any[]>([]);
+  const [apiKeyNameInput, setApiKeyNameInput] = useState("");
+  const [apiKeySubmitting, setApiKeySubmitting] = useState(false);
+  const [newlyGeneratedKey, setNewlyGeneratedKey] = useState<string | null>(null);
+
+  const generateApiKey = async () => {
+    if (!apiKeyNameInput.trim() || !currentUser) return;
+    setApiKeySubmitting(true);
+    try {
+      const randomPart = Array.from({ length: 24 }, () => 
+        Math.floor(Math.random() * 16).toString(16)
+      ).join("");
+      const generatedKey = `cl_api_${randomPart}`;
+      
+      await setDoc(doc(db, "apiKeys", generatedKey), {
+        name: apiKeyNameInput.trim(),
+        userId: currentUser.uid,
+        createdAt: new Date(),
+        status: "active"
+      });
+      
+      setNewlyGeneratedKey(generatedKey);
+      setApiKeyNameInput("");
+    } catch (err) {
+      console.error("Error generating API key:", err);
+    } finally {
+      setApiKeySubmitting(false);
+    }
+  };
+
+  const revokeApiKey = async (keyId: string) => {
+    if (!currentUser) return;
+    if (confirm("Are you sure you want to revoke this API key? External apps using this key will immediately lose access.")) {
+      try {
+        await deleteDoc(doc(db, "apiKeys", keyId));
+        if (newlyGeneratedKey === keyId) {
+          setNewlyGeneratedKey(null);
+        }
+      } catch (err) {
+        console.error("Error revoking API key:", err);
+      }
+    }
+  };
 
   useEffect(() => {
     const handleResize = () => {
@@ -179,9 +225,25 @@ export default function AiTestPage() {
             });
           }
         });
+
+        // Listen to API keys from Firestore in real-time
+        const apiKeysQuery = query(collection(db, "apiKeys"), where("userId", "==", user.uid));
+        const unsubscribeApiKeys = onSnapshot(apiKeysQuery, (snapshot) => {
+          const loadedKeys: any[] = [];
+          snapshot.forEach((docSnap) => {
+            loadedKeys.push({
+              id: docSnap.id,
+              ...docSnap.data()
+            });
+          });
+          setApiKeys(loadedKeys);
+        });
         
         setAuthLoading(false);
-        return () => unsubscribeSessions();
+        return () => {
+          unsubscribeSessions();
+          unsubscribeApiKeys();
+        };
       } else {
         setCurrentUser(null);
         setSessions([
@@ -193,6 +255,7 @@ export default function AiTestPage() {
           }
         ]);
         setActiveSessionId("welcome-session");
+        setApiKeys([]);
         setAuthLoading(false);
       }
     });
@@ -1692,18 +1755,40 @@ Answer:`;
           {/* New Chat Actions */}
           <div className="grid grid-cols-2 gap-2 md:grid">
             <button 
-              onClick={() => createNewSession("text")}
+              onClick={() => {
+                setActiveView("workspace");
+                createNewSession("text");
+              }}
               className="flex items-center justify-center gap-1.5 bg-[#1c1528] hover:bg-[#2a1f3d] border border-purple-900/30 text-xs font-semibold py-2 rounded-xl transition-colors cursor-pointer"
             >
               <Plus size={12} weight="bold" /> Text Chat
             </button>
             <button 
-              onClick={() => createNewSession("image")}
+              onClick={() => {
+                setActiveView("workspace");
+                createNewSession("image");
+              }}
               className="flex items-center justify-center gap-1.5 bg-[#1c1528] hover:bg-[#2a1f3d] border border-purple-900/30 text-xs font-semibold py-2 rounded-xl transition-colors cursor-pointer"
             >
               <Plus size={12} weight="bold" /> Image Canvas
             </button>
           </div>
+
+          {/* Developer API Button */}
+          <button 
+            onClick={() => {
+              setActiveView(activeView === "api-dashboard" ? "workspace" : "api-dashboard");
+              if (isMobile) setSidebarOpen(false);
+            }}
+            className={`w-full flex items-center justify-center gap-2 border text-xs font-bold py-2.5 rounded-xl transition-all cursor-pointer ${
+              activeView === "api-dashboard"
+                ? "bg-gradient-to-r from-purple-600 to-indigo-600 border-purple-500/50 text-white shadow-lg shadow-purple-950/20"
+                : "bg-[#1c1528] hover:bg-[#2a1f3d] border-purple-900/30 text-purple-300"
+            }`}
+          >
+            <Cpu size={14} weight="bold" /> 
+            {activeView === "api-dashboard" ? "Back to Workspace" : "Developer API Center"}
+          </button>
 
           {/* Personal Bot Creator Card */}
           {activeSession.type === "text" && (
@@ -1786,7 +1871,10 @@ Answer:`;
                 return (
                   <div
                     key={s.id}
-                    onClick={() => setActiveSessionId(s.id)}
+                    onClick={() => {
+                      setActiveSessionId(s.id);
+                      setActiveView("workspace");
+                    }}
                     className={`group flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-medium cursor-pointer transition-all border ${
                       isActive 
                         ? "bg-[#1c1528] border-purple-900/50 text-white" 
@@ -1935,7 +2023,223 @@ Answer:`;
         </button>
 
         {/* Main Content Workspace */}
-        <main className="flex-1 flex flex-col items-center justify-between px-6 py-6 w-full max-w-4xl mx-auto overflow-hidden relative z-10">
+        {/* Main Content Workspace */}
+        {activeView === "api-dashboard" ? (
+          <main className="flex-1 w-full max-w-4xl mx-auto px-6 py-8 overflow-y-auto relative z-10 custom-scrollbar text-left space-y-8 pl-12 sm:pl-6">
+            {/* Header Title */}
+            <div className="border-b border-purple-950/40 pb-5 space-y-2">
+              <div className="inline-flex h-9 w-9 items-center justify-center rounded-xl bg-purple-950/60 border border-purple-900/40 text-purple-400">
+                <Cpu size={18} weight="bold" />
+              </div>
+              <h1 className="text-2xl sm:text-3xl font-black text-white tracking-tight uppercase">Developer API Center</h1>
+              <p className="text-xs text-purple-300">Generate secure API keys to integrate cyberlim.AI chat agents directly into your own website or application.</p>
+            </div>
+
+            {/* Key Generator Section */}
+            <div className="bg-[#1c1528]/50 border border-purple-900/30 rounded-2xl p-5 sm:p-6 space-y-4 shadow-xl backdrop-blur-md relative overflow-hidden">
+              <div className="absolute top-0 right-0 w-32 h-32 bg-purple-500/5 rounded-full blur-2xl pointer-events-none" />
+              <h2 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                <Plus size={16} /> Create API Key
+              </h2>
+              <div className="flex flex-col sm:flex-row gap-3">
+                <input
+                  type="text"
+                  placeholder="Enter key name (e.g. Production Website)"
+                  value={apiKeyNameInput}
+                  onChange={(e) => setApiKeyNameInput(e.target.value)}
+                  className="flex-1 bg-[#0c0414] border border-purple-900/30 focus:border-purple-500/80 rounded-xl px-4 py-2.5 text-xs text-white outline-none transition-colors"
+                />
+                <button
+                  onClick={generateApiKey}
+                  disabled={apiKeySubmitting || !apiKeyNameInput.trim()}
+                  className="bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white font-bold text-xs uppercase tracking-wider px-6 py-2.5 rounded-xl transition-all shadow-md shadow-purple-950/20 disabled:opacity-50 cursor-pointer"
+                >
+                  {apiKeySubmitting ? "Generating..." : "Generate Key"}
+                </button>
+              </div>
+
+              {newlyGeneratedKey && (
+                <div className="bg-emerald-950/40 border border-emerald-900/30 rounded-xl p-4 space-y-2 animate-fade-in">
+                  <div className="flex justify-between items-center">
+                    <span className="text-[10px] font-black text-emerald-450 uppercase tracking-widest flex items-center gap-1.5">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400 animate-pulse" />
+                      Key Created Successfully
+                    </span>
+                    <button 
+                      onClick={() => setNewlyGeneratedKey(null)}
+                      className="text-[9px] font-bold text-zinc-400 hover:text-white uppercase"
+                    >
+                      Dismiss
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-zinc-300">Copy this API key now. For security reasons, you will not be able to view it again.</p>
+                  <div className="flex items-center gap-2 bg-[#0c0414] border border-purple-900/30 rounded-xl p-2.5">
+                    <code className="flex-1 text-xs text-emerald-450 select-all font-mono break-all pr-2">{newlyGeneratedKey}</code>
+                    <button
+                      onClick={() => {
+                        navigator.clipboard.writeText(newlyGeneratedKey);
+                        alert("API Key copied to clipboard!");
+                      }}
+                      className="bg-emerald-600 hover:bg-emerald-500 text-white text-[10px] font-bold uppercase tracking-wider px-3.5 py-1.5 rounded-lg transition-colors cursor-pointer"
+                    >
+                      Copy
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Keys Table / List */}
+            <div className="bg-[#1c1528]/30 border border-purple-900/20 rounded-2xl p-5 sm:p-6 space-y-4">
+              <h2 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                <Database size={16} /> Active API Keys
+              </h2>
+              {apiKeys.length === 0 ? (
+                <p className="text-xs text-zinc-500 py-4 text-center">No active API keys found. Create a key above to get started.</p>
+              ) : (
+                <div className="overflow-x-auto rounded-xl border border-purple-950 bg-[#1c1528]/50">
+                  <table className="w-full text-left border-collapse text-xs">
+                    <thead className="bg-[#2a1f3d] text-zinc-300 font-bold uppercase tracking-wider border-b border-purple-900/60">
+                      <tr>
+                        <th className="px-4 py-3">Key Name</th>
+                        <th className="px-4 py-3">Key Mask</th>
+                        <th className="px-4 py-3">Created At</th>
+                        <th className="px-4 py-3 text-right">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-purple-900/40">
+                      {apiKeys.map((k) => (
+                        <tr key={k.id} className="hover:bg-purple-950/20 transition-colors">
+                          <td className="px-4 py-3 font-semibold text-white">{k.name}</td>
+                          <td className="px-4 py-3 font-mono text-zinc-400">
+                            {k.id.substring(0, 10)}••••••••••••••••
+                          </td>
+                          <td className="px-4 py-3 text-zinc-400">
+                            {k.createdAt?.seconds 
+                              ? new Date(k.createdAt.seconds * 1000).toLocaleDateString()
+                              : new Date().toLocaleDateString()
+                            }
+                          </td>
+                          <td className="px-4 py-3 text-right">
+                            <button
+                              onClick={() => revokeApiKey(k.id)}
+                              className="text-[10px] font-bold text-rose-450 hover:text-rose-350 bg-rose-950/20 hover:bg-rose-900/30 border border-rose-900/30 rounded-lg px-2.5 py-1 transition-colors cursor-pointer"
+                            >
+                              Revoke
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Documentation / Instructions Section */}
+            <div className="bg-[#1c1528]/50 border border-purple-900/30 rounded-2xl p-5 sm:p-6 space-y-6 shadow-xl backdrop-blur-md relative">
+              <h2 className="text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                <Globe size={16} /> API Integration Guide
+              </h2>
+              
+              <div className="space-y-4 text-xs text-zinc-300 leading-relaxed">
+                <div>
+                  <h3 className="font-extrabold text-white text-xs mb-1 uppercase tracking-wider">1. Endpoint Details</h3>
+                  <p>Send a standard HTTP POST request to compile/stream completions using your API keys:</p>
+                  <div className="bg-[#0c0414] border border-purple-900/30 rounded-xl p-3 flex flex-col sm:flex-row justify-between items-start sm:items-center mt-2 gap-2">
+                    <div>
+                      <span className="bg-emerald-950/65 text-emerald-450 border border-emerald-900/40 text-[9px] font-black uppercase px-2 py-0.5 rounded select-none mr-2">POST</span>
+                      <code className="text-xs text-white font-mono">{typeof window !== "undefined" ? `${window.location.origin}/api/chat` : "https://ai.cyberlim.com/api/chat"}</code>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="border-t border-purple-950/40 pt-4">
+                  <h3 className="font-extrabold text-white text-xs mb-1 uppercase tracking-wider">2. Request Headers</h3>
+                  <ul className="list-disc pl-4 space-y-1">
+                    <li><code className="bg-[#2a1f3d] text-purple-300 px-1 py-0.5 rounded font-mono">Content-Type: application/json</code></li>
+                    <li><code className="bg-[#2a1f3d] text-purple-300 px-1 py-0.5 rounded font-mono">Authorization: Bearer YOUR_API_KEY</code></li>
+                  </ul>
+                </div>
+
+                <div className="border-t border-purple-950/40 pt-4">
+                  <h3 className="font-extrabold text-white text-xs mb-1 uppercase tracking-wider">3. Request Body Payload</h3>
+                  <div className="bg-[#0c0414] border border-purple-900/30 rounded-xl p-4.5 font-mono text-zinc-400 text-xs">
+                    <pre className="whitespace-pre-wrap">{`{
+  "prompt": "Write a 3-sentence welcome email for a lead",
+  "systemInstruction": "You are a professional assistant...", // Optional system rules
+  "model": "mistral", // Optional, defaults to mistral. Options: mistral, llama, qwen, phi, pollinations
+  "stream": true // Optional, defaults to true for word-by-word streaming
+}`}</pre>
+                  </div>
+                </div>
+
+                <div className="border-t border-purple-950/40 pt-4 space-y-3">
+                  <h3 className="font-extrabold text-white text-xs uppercase tracking-wider">4. Code Integration Sample (JavaScript / Node.js)</h3>
+                  <p>Below is a working Node.js sample that streams words in real-time as they are generated by the model:</p>
+                  <div className="bg-[#0c0414] border border-purple-900/30 rounded-xl p-4.5 font-mono text-zinc-400 text-[11px] leading-normal overflow-x-auto relative">
+                    <button
+                      onClick={() => {
+                        const code = `const fetchChat = async () => {
+  const response = await fetch("${typeof window !== 'undefined' ? window.location.origin : 'https://ai.cyberlim.com'}/api/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer cl_api_YOUR_KEY_HERE"
+    },
+    body: JSON.stringify({
+      prompt: "Tell me a joke",
+      model: "mistral",
+      stream: true
+    })
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value);
+    process.stdout.write(chunk);
+  }
+};`;
+                        navigator.clipboard.writeText(code);
+                        alert("Code sample copied to clipboard!");
+                      }}
+                      className="absolute top-3 right-3 bg-purple-950 hover:bg-purple-900 text-purple-300 text-[9px] font-bold uppercase tracking-wider px-2.5 py-1 rounded border border-purple-800/40 transition-colors cursor-pointer"
+                    >
+                      Copy Snippet
+                    </button>
+                    <pre>{`const fetchChat = async () => {
+  const response = await fetch("${typeof window !== 'undefined' ? window.location.origin : 'https://ai.cyberlim.com'}/api/chat", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": "Bearer cl_api_YOUR_KEY_HERE"
+    },
+    body: JSON.stringify({
+      prompt: "Tell me a joke",
+      model: "mistral",
+      stream: true
+    })
+  });
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    const chunk = decoder.decode(value);
+    process.stdout.write(chunk);
+  }
+};`}</pre>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </main>
+        ) : (
+          <main className="flex-1 flex flex-col items-center justify-between px-6 py-6 w-full max-w-4xl mx-auto overflow-hidden relative z-10">
           
           {/* Header Area inside main screen */}
           <header className="w-full flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2 pb-4 border-b border-purple-950/20 pl-12">
@@ -2625,6 +2929,7 @@ Answer:`;
             )}
           </div>
         </main>
+        )}
       </div>
 
       {/* PDF SIDEBAR CONTAINER */}
