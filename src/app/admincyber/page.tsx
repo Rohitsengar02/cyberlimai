@@ -18,6 +18,9 @@ import {
 } from "chart.js";
 import { Line, Bar, Doughnut } from "react-chartjs-2";
 import OverviewComponent from "./CyberlimIT/overview";
+import LeadsComponent from "./CyberlimIT/leads";
+import PipelineComponent from "./CyberlimIT/pipeline";
+import ProposalsComponent from "./CyberlimIT/proposals";
 
 ChartJS.register(
   CategoryScale, LinearScale, PointElement, LineElement,
@@ -824,32 +827,18 @@ function OverviewSection() {
 }
 
 function LeadsSection() {
-  const { barOpts } = useChartOpts();
-  const leads = [
-    { title: "Radiant Interiors", sub: "Meta Ads · Informative website", tag: "Hot", tagColor: "coral" },
-    { title: "Vertex Logistics", sub: "Meta Ads · SaaS app development", tag: "Warm", tagColor: "amber" },
-    { title: "Kavya Boutique", sub: "Meta Ads · E-commerce app", tag: "Hot", tagColor: "coral" },
-    { title: "Northstar Clinic", sub: "Referral · Hospital ERP", tag: "Warm", tagColor: "amber" },
-    { title: "Anaco Programming", sub: "Direct · AMC renewal", tag: "Cold", tagColor: "gray" },
-  ];
-  return (
-    <div className="space-y-5">
-      <SectionHeader title="Leads inbox" subtitle="Every new lead from Meta Ads, referrals, and direct contact" />
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <StatCard label="Total leads" value="87" delta="+22%" up icon={Tray} />
-        <StatCard label="New today" value="9" delta="+4" up icon={Sparkle} delay={0.05} />
-        <StatCard label="Qualified" value="16" delta="+8%" up icon={Target} delay={0.1} />
-        <StatCard label="Conversion rate" value="14%" delta="+2%" up icon={ChartLineUp} delay={0.15} />
-      </div>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        <GlassCard delay={0.1}>
-          <h3 className="text-sm font-bold mb-4">Leads by source</h3>
-          <div className="h-[220px]"><Bar data={leadsBySourceData} options={barOpts} /></div>
-        </GlassCard>
-        <ListCard label="Recent leads" items={leads} delay={0.15} />
-      </div>
-    </div>
-  );
+  const { theme } = useThemeCtx();
+  return <LeadsComponent theme={theme} />;
+}
+
+function PipelineSection() {
+  const { theme } = useThemeCtx();
+  return <PipelineComponent theme={theme} />;
+}
+
+function ProposalsSection() {
+  const { theme } = useThemeCtx();
+  return <ProposalsComponent theme={theme} />;
 }
 
 function SaasSection() {
@@ -1022,6 +1011,8 @@ function GenericSection({ id, label }: { id: string; label: string }) {
 const BESPOKE: Record<string, React.FC> = {
   overview: OverviewSection,
   leads: LeadsSection,
+  pipeline: PipelineSection,
+  proposals: ProposalsSection,
   saas: SaasSection,
   team: TeamSection,
   agents: AgentsSection,

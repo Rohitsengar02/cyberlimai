@@ -34,9 +34,10 @@ export async function POST(req: NextRequest) {
         },
         body: JSON.stringify({
           messages: [
+            { role: "system", content: "You are a JSON-only generator. You MUST keep your thinking/reasoning process extremely short (under 10 words total). Summarize your plan in 1 sentence in thinking, then output the raw JSON starting with '{' immediately." },
             { role: "user", content: contentPayload }
           ],
-          model: "openai", // Force OpenAI (GPT-4o) vision model
+          model: "openai", // Use active openai model
           stream: true // Enable streaming on Pollinations API
         })
       });

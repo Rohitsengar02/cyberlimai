@@ -1,0 +1,136 @@
+{
+  "coverTitle": "Grocery Marketplace",
+  "coverSubtitle": "PROPOSAL",
+  "coverTitleSize": 16,
+  "coverDesc": "A next-generation on-demand grocery marketplace designed to connect customer ordering with multi-vendor store operations and centralized administration.",
+  "tocPoints": [
+    "Executive Summary",
+    "Customer Panel Features",
+    "Vendor Panel Features",
+    "Admin Panel Features",
+    "Estimated Timeline & Cost",
+    "Technology Stack"
+  ],
+  "aboutSlogan": "Engineered for speed, security, and scalability.",
+  "aboutDesc": "This proposal outlines our technical plan for building a highly customizable multi-role marketplace application matching your exact business requirements.",
+  "aboutS1Val": "100%",
+  "aboutS1Label": "Customer Satisfaction",
+  "aboutS2Val": "24/7",
+  "aboutS2Label": "Support Availability",
+  "aboutS3Val": "99.99%",
+  "aboutS3Label": "Server Uptime SLA",
+  "aboutMissionTitle": "Mission",
+  "aboutMissionText": "Provide an intuitive, fast digital ordering storefront that bridges local grocers with retail buyers securely.",
+  "aboutVisionTitle": "Vision",
+  "aboutVisionText": "Empower local commerce through modern cloud automation, vector-based product search, and instant payout workflows.",
+  "aboutQuoteText": "Quality is never an accident; it is always the result of intelligent effort.",
+  "timelinePageTitle": "Estimated Timeline & Cost",
+  "timelineRows": [
+    {"name": "UI/UX Architecture & Wireframing", "val": "4-6 Days"},
+    {"name": "Core Backend API Integration", "val": "12-15 Days"},
+    {"name": "Client App Development & Features", "val": "14-18 Days"},
+    {"name": "Staging Deployment & Beta Testing", "val": "3-5 Days"}
+  ],
+  "timelineTotalVal": "35 - 44 Working Days",
+  "timelineBaseCost": "₹85,000 /-",
+  "timelineIncluded": [
+    "Multi-role user authentication",
+    "Advanced product search & filtering",
+    "Live order tracking dashboard",
+    "Vendor onboarding & KYC pipeline",
+    "Commission settlement gateway",
+    "Automated PDF invoice downloads"
+  ],
+  "scopes": [
+    {
+      "title": "Customer Panel Features",
+      "blocks": [
+        {
+          "type": "heading",
+          "title": "Storefront Ordering UX"
+        },
+        {
+          "type": "desc",
+          "text": "Detailed functional requirements description for client application core storefront and cart checkout flows."
+        },
+        {
+          "type": "points",
+          "points": [
+            "Vibrant product grid with categories",
+            "Animated add-to-cart operations",
+            "Multi-gateway checkout (UPI, Card, NetBanking)",
+            "Real-time push notifications for order tracking"
+          ]
+        },
+        {
+          "type": "table",
+          "tableHeaders": ["Feature Module", "Technology Stack & SLA"],
+          "tableRows": [
+            ["Cart State", "Redux Toolkit & LocalStorage"],
+            ["UPI Payments", "Razorpay / PhonePe Integration"]
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Vendor Panel Features",
+      "blocks": [
+        {
+          "type": "heading",
+          "title": "Storefront Merchant Portal"
+        },
+        {
+          "type": "desc",
+          "text": "Functional specifications for merchants to set up their inventory, update pricing, and dispatch customer orders."
+        },
+        {
+          "type": "points",
+          "points": [
+            "Store profile creation and KYC registration",
+            "Product listing CRUD with bulk CSV import",
+            "Live order management and dispatch statuses",
+            "Monthly payouts and commission calculator sheet"
+          ]
+        },
+        {
+          "type": "table",
+          "tableHeaders": ["Merchant Module", "Technology Stack & SLA"],
+          "tableRows": [
+            ["KYC Verification", "DigiLocker OCR Sync"],
+            ["Inventory Sync", "Redis Cache / PostgreSQL replication"]
+          ]
+        }
+      ]
+    },
+    {
+      "title": "Admin Panel Features",
+      "blocks": [
+        {
+          "type": "heading",
+          "title": "Central Control Center"
+        },
+        {
+          "type": "desc",
+          "text": "Core administration features to moderate merchants, review commission models, and monitor platform performance."
+        },
+        {
+          "type": "points",
+          "points": [
+            "Global platform analytics (sales, users, active orders)",
+            "Vendor moderation and approval workflows",
+            "Taxation, commission tier, and discount code controls",
+            "Comprehensive server status logs and incident monitors"
+          ]
+        },
+        {
+          "type": "table",
+          "tableHeaders": ["Control Panel", "Technology Stack & SLA"],
+          "tableRows": [
+            ["Server Monitoring", "Prometheus & Grafana"],
+            ["Data Warehouse", "BigQuery / PostgreSQL replicas"]
+          ]
+        }
+      ]
+    }
+  ]
+}
